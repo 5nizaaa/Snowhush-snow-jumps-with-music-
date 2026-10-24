@@ -27,7 +27,7 @@ struct Sprite {
     float tintRed;
     float tintGreen;
     float tintBlue;
-    float padding;
+    float lump;
 };
 
 struct SpriteOut {
@@ -39,6 +39,8 @@ struct SpriteOut {
     float3 light;
     float2 streak;
     float radius;
+    float lump;
+    float spin;
 };
 
 vertex SpriteOut spriteVertex(uint vid [[vertex_id]],
@@ -48,9 +50,11 @@ vertex SpriteOut spriteVertex(uint vid [[vertex_id]],
     float pixels = s.size * u.scale;
     // About a 1/55 s exposure, capped so even the fastest grain stays a short smear and never reads as rain.
     float2 travel = s.velocity * 0.018;
-    float smear = min(length(travel), s.size * 2.2);
+    float smear = min(length(travel), s.size * (s.lump > 0.0 ? 1.2 : 2.2));
     float2 streak = smear > 0.25 ? normalize(travel) * smear * u.scale : float2(0.0);
-    float extent = max(pixels + length(streak), 2.0);
+    // A lump's ragged edge reaches past its nominal size.
+    float reach = s.lump > 0.0 ? 1.3 : 1.0;
+    float extent = max(pixels * reach + length(streak), 2.0);
     SpriteOut out;
     out.position = float4(s.position / u.viewSize * 2.0 - 1.0, 0.0, 1.0);
     out.pointSize = extent;
@@ -61,6 +65,8 @@ vertex SpriteOut spriteVertex(uint vid [[vertex_id]],
     out.soft = s.soft;
     out.tint = float4(s.tintRed, s.tintGreen, s.tintBlue, s.tintAmount);
     out.light = u.light.rgb;
+    out.lump = s.lump;
+    out.spin = s.lump > 0.0 ? u.time * (s.lump - 0.5) * 9.0 + s.lump * 40.0 : 0.0;
     return out;
 }
 
@@ -70,14 +76,21 @@ fragment float4 spriteFragment(SpriteOut in [[stage_in]], float2 coord [[point_c
     float2 half_ = in.streak * 0.5;
     float span = dot(half_, half_);
     float t = span > 0.0 ? clamp(dot(p, half_) / span, -1.0, 1.0) : 0.0;
-    float r = length(p - half_ * t) / max(in.radius, 0.001);
+    float2 d = p - half_ * t;
+    float r = length(d) / max(in.radius, 0.001);
+    float shading = 0.0;
+    if (in.lump > 0.0) {
+        float angle = atan2(d.y, d.x) + in.spin;
+        r /= 1.0 + 0.14 * sin(3.0 * angle) + 0.08 * sin(5.0 * angle + in.lump * 21.0) + 0.05 * sin(2.0 * angle + in.lump * 9.0);
+        shading = saturate(dot(d / max(in.radius, 0.001), float2(0.45, -0.6))) * 0.4;
+    }
     // Brighter at the head, where the flake is now, than at the tail, where it was.
     float head = span > 0.0 ? 0.15 + 0.85 * pow(t * 0.5 + 0.5, 1.5) : 1.0;
     float a = (1.0 - smoothstep(mix(0.6, 0.0, in.soft), 1.0, r)) * in.alpha * head;
     if (a < 0.002) discard_fragment();
     float3 core = float3(0.965, 0.975, 0.995);
     float3 rim = float3(0.62, 0.67, 0.77);
-    float3 color = mix(core, rim, smoothstep(0.35, 1.0, r) * 0.65);
+    float3 color = mix(core, rim, saturate(smoothstep(0.35, 1.0, r) * 0.65 + shading));
     color = mix(color, in.tint.rgb, in.tint.a) * in.light;
     return float4(color * a, a);
 }

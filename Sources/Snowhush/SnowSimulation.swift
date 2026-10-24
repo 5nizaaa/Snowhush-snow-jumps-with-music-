@@ -14,7 +14,8 @@ struct Sprite {
     var tintRed: Float = 1
     var tintGreen: Float = 1
     var tintBlue: Float = 1
-    var padding: Float = 0
+    /// Gives a lump of snow its ragged outline and tumble; zero for a round flake.
+    var lump: Float = 0
 }
 
 /// A bit of something that crumbles into snow, such as a window: it keeps its colour for a moment while it falls.
@@ -56,6 +57,18 @@ private struct Grain {
     var velocity: SIMD2<Float>
     var area: Float
     var size: Float
+    /// A lump holds together in flight and bursts into powder where it lands; zero for loose snow.
+    var lump: Float = 0
+}
+
+/// Powder thrown up by a lump bursting: it billows, slows in the air and fades without settling.
+private struct Mote {
+    var position: SIMD2<Float>
+    var velocity: SIMD2<Float>
+    var size: Float
+    var alpha: Float
+    var age: Float = 0
+    var life: Float
 }
 
 private struct RandomSource {
@@ -136,6 +149,7 @@ final class SnowSimulation {
     private let shaking: Float = 4
     private let jumpSpeed: Float = 6000
     private let trackTime: Float = 0.06
+    private let maxMotes = 1500
 
     private let ground: SnowLayer
     private var ledges: [CGWindowID: SnowLayer] = [:]
@@ -144,6 +158,7 @@ final class SnowSimulation {
     private var heldLayers: [SnowLayer] = []
     private var flakes: [Flake] = []
     private var grains: [Grain] = []
+    private var motes: [Mote] = []
     private var targetFlakes = 0
     private var random = RandomSource()
     private var clock: Double = 0
@@ -182,7 +197,7 @@ final class SnowSimulation {
 
     var pileTop: Float { ground.top }
     var hasSnow: Bool { layers.contains { $0.top > 0.5 } }
-    var spriteCount: Int { flakes.count + grains.count }
+    var spriteCount: Int { flakes.count + grains.count + motes.count }
     /// Floats the renderer needs per frame: each layer's surface and bed.
     var columnCount: Int { layers.reduce(0) { $0 + 2 * $1.count } }
 
@@ -197,7 +212,7 @@ final class SnowSimulation {
     /// Returns whether anything visible changed.
     func step(dt: Float, cursor point: SIMD2<Float>) -> Bool {
         clock += Double(dt)
-        let wasMoving = !flakes.isEmpty || !grains.isEmpty
+        let wasMoving = !flakes.isEmpty || !grains.isEmpty || !motes.isEmpty
         heightsChanged = false
 
         vary(dt: dt)
@@ -206,6 +221,7 @@ final class SnowSimulation {
         trackCursor(point, dt: dt)
         advanceFlakes(dt: dt)
         advanceGrains(dt: dt)
+        advanceMotes(dt: dt)
         settle(dt: dt)
         spawnFlakes()
 
@@ -224,7 +240,7 @@ final class SnowSimulation {
         } else {
             pace = .calm
         }
-        let changed = wasMoving || !flakes.isEmpty || !grains.isEmpty || heightsChanged || windowsChanged
+        let changed = wasMoving || !flakes.isEmpty || !grains.isEmpty || !motes.isEmpty || heightsChanged || windowsChanged
         windowsChanged = false
         return changed
     }
@@ -246,7 +262,20 @@ final class SnowSimulation {
             count += 1
         }
         for grain in grains where count < capacity {
-            buffer[count] = Sprite(position: grain.position, velocity: grain.velocity, size: grain.size, alpha: 0.95, soft: 0.3)
+            buffer[count] = Sprite(
+                position: grain.position,
+                velocity: grain.velocity,
+                size: grain.size,
+                alpha: grain.lump > 0 ? 0.97 : 0.95,
+                soft: grain.lump > 0 ? 0.2 : 0.3,
+                lump: grain.lump
+            )
+            count += 1
+        }
+        for mote in motes where count < capacity {
+            let t = mote.age / mote.life
+            let fade = min(1, mote.age / 0.06) * pow(1 - t, 1.5)
+            buffer[count] = Sprite(position: mote.position, size: mote.size * (1 + t), alpha: mote.alpha * fade, soft: 1)
             count += 1
         }
         return count
@@ -492,21 +521,91 @@ final class SnowSimulation {
         }
     }
 
-    /// Turns part of a ledge's snow into falling clumps where it lies.
+    /// Turns part of a ledge's snow into falling snow where it lies: a few columns at a time hold together
+    /// as a lump, the rest pours off as powder.
     private func shed(_ ledge: SnowLayer, share: Float, velocity: SIMD2<Float>) {
-        for i in 0..<ledge.count where ledge.heights[i] > 0.05 {
-            let h = ledge.heights[i]
-            let amount = h * share
-            ledge.set(i, h - amount)
-            release(
-                amount * columnWidth,
-                at: SIMD2(ledge.centerX(i), ledge.floor(i) + h - amount),
-                velocity: velocity,
-                spread: SIMD2(columnWidth / 2, amount),
-                scatter: 0.25
-            )
+        var start = 0
+        while start < ledge.count {
+            let end = min(ledge.count, start + Int(random.range(2, 7)))
+            var area: Float = 0
+            var lowest = Float.greatestFiniteMagnitude
+            var highest = -Float.greatestFiniteMagnitude
+            for i in start..<end where ledge.heights[i] > 0.05 {
+                let h = ledge.heights[i]
+                area += h * share * columnWidth
+                lowest = min(lowest, ledge.floor(i) + h * (1 - share))
+                highest = max(highest, ledge.floor(i) + h)
+            }
+            let cohesion = area > 14 ? random.range(0.4, 0.7) : 0
+            for i in start..<end where ledge.heights[i] > 0.05 {
+                let h = ledge.heights[i]
+                let amount = h * share
+                ledge.set(i, h - amount)
+                release(
+                    amount * columnWidth * (1 - cohesion),
+                    at: SIMD2(ledge.centerX(i), ledge.floor(i) + h - amount),
+                    velocity: velocity,
+                    spread: SIMD2(columnWidth / 2, amount),
+                    scatter: 0.25
+                )
+            }
+            if cohesion > 0 {
+                let left = ledge.centerX(start)
+                let right = ledge.centerX(end - 1)
+                throwLump(area * cohesion, at: SIMD2((left + right) / 2, (lowest + highest) / 2), velocity: velocity)
+            }
+            start = end
         }
         heightsChanged = true
+    }
+
+    private func throwLump(_ area: Float, at position: SIMD2<Float>, velocity: SIMD2<Float>) {
+        let pieces = Int(area / 90) + 1
+        for _ in 0..<pieces where grains.count < maxGrains {
+            let share = area / Float(pieces)
+            grains.append(Grain(
+                position: position + SIMD2(random.range(-2, 2), random.range(-1, 1)),
+                // Lumps break away a moment before the powder around them, so a falling sheet comes apart.
+                velocity: velocity * (1 + random.range(-0.2, 0.2)) + SIMD2(random.range(-25, 25), random.range(-80, 0)),
+                area: share,
+                size: min(11, share.squareRoot() * 1.05),
+                lump: random.range(0.05, 1)
+            ))
+        }
+    }
+
+    /// A lump hitting the snow: most of it packs in where it lands, a few crumbs hop off and a puff of powder rises.
+    private func burst(_ lump: Grain, into layer: SnowLayer) {
+        let impact = max(0, -lump.velocity.y)
+        let force = min(max(impact / 900, 0.35), 1.3)
+        let crumbs = lump.area * 0.18
+        for spot: Float in [-0.3, 0, 0.3] {
+            let x = lump.position.x + spot * lump.size
+            let missed = layer.deposit((lump.area - crumbs) / 3, at: x, wide: true)
+            dropPast(layer, missed, near: x, velocity: lump.velocity.x * 0.3)
+        }
+        let surface = layer.index(at: lump.position.x).map { layer.surface($0) } ?? lump.position.y
+        release(
+            crumbs,
+            at: SIMD2(lump.position.x, surface + 1),
+            velocity: SIMD2(lump.velocity.x * 0.3, impact * random.range(0.08, 0.16)),
+            spread: SIMD2(lump.size * 0.4, 1),
+            scatter: 0.6
+        )
+
+        let count = min(maxMotes - motes.count, Int(2 + lump.size * 0.6 * force))
+        guard count > 0 else { return }
+        for _ in 0..<count {
+            let angle = random.range(0.15, .pi - 0.15)
+            let speed = random.range(25, 110) * force
+            motes.append(Mote(
+                position: SIMD2(lump.position.x + random.range(-0.5, 0.5) * lump.size, surface + random.range(0, lump.size * 0.4)),
+                velocity: SIMD2(cos(angle) * speed * 1.4 + lump.velocity.x * 0.2, sin(angle) * speed * 0.6),
+                size: random.range(0.3, 0.6) * lump.size + 1,
+                alpha: random.range(0.1, 0.22),
+                life: random.range(0.45, 0.9)
+            ))
+        }
     }
 
     /// `scatter` varies each clump's speed by that fraction, so a thrown sheet of snow breaks up instead of flying as one band.
@@ -759,12 +858,40 @@ final class SnowSimulation {
             if grain.position.x < -10 || grain.position.x > width + 10 {
                 removeGrain(i)
             } else if grain.velocity.y <= 0, let hit = landing(x: grain.position.x, from: previousY, to: grain.position.y) {
+                if grain.lump > 0 {
+                    burst(grain, into: hit.layer)
+                    heightsChanged = true
+                    removeGrain(i)
+                    i -= 1
+                    continue
+                }
                 let missed = hit.layer.deposit(grain.area, at: grain.position.x, wide: true)
                 dropPast(hit.layer, missed, near: grain.position.x, velocity: grain.velocity.x * 0.5)
                 heightsChanged = true
                 removeGrain(i)
             } else {
                 grains[i] = grain
+            }
+            i -= 1
+        }
+    }
+
+    private func advanceMotes(dt: Float) {
+        guard !motes.isEmpty else { return }
+        let damping = exp(-3.2 * dt)
+        let drift = windSpeed() * 0.4
+        var i = motes.count - 1
+        while i >= 0 {
+            var mote = motes[i]
+            mote.age += dt
+            if mote.age >= mote.life {
+                motes.swapAt(i, motes.count - 1)
+                motes.removeLast()
+            } else {
+                mote.velocity.y -= 35 * dt
+                mote.velocity *= damping
+                mote.position += (mote.velocity + SIMD2(drift, 0)) * dt
+                motes[i] = mote
             }
             i -= 1
         }
