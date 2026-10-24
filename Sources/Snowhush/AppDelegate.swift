@@ -68,6 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, SPUSta
         updateStatusIcon()
         observeSystem()
         if !Preferences.welcomed {
+            simulation.snowfallHeld = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in self?.showWelcome() }
         }
     }
@@ -79,6 +80,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, SPUSta
         let welcome = WelcomeController()
         welcome.scatter = { [weak self] pieces in self?.simulation.scatter(pieces) }
         welcome.overlayOrigin = { [weak self] in self?.window.frame.origin ?? .zero }
+        welcome.skipped = { [weak self] in self?.simulation.snowfallHeld = false }
         welcome.finished = { [weak self] in
             Preferences.welcomed = true
             self?.welcome = nil

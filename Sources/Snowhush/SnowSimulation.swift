@@ -89,6 +89,10 @@ final class SnowSimulation {
     }
     var thaws = false
     var accumulates = true
+    /// Keeps the snowfall from starting until a scattered window's snow first reaches the bottom of the screen.
+    var snowfallHeld = false {
+        didSet { updateTarget() }
+    }
 
     private let groundDepth: Float = 40
     private let ledgeDepth: Float = 14
@@ -701,6 +705,7 @@ final class SnowSimulation {
 
             if flake.settles && accumulates {
                 if let hit = landing(x: flake.position.x, from: previousY, to: flake.position.y) {
+                    if snowfallHeld && flake.mass < 1 && hit.layer === ground { snowfallHeld = false }
                     hit.layer.deposit(flake.size * flake.size * deposition * flake.mass * hit.layer.fill(hit.index), at: flake.position.x, wide: true)
                     heightsChanged = true
                     recycle(i)
@@ -815,6 +820,8 @@ final class SnowSimulation {
 
     /// Wanders between light lulls, steady snow and heavy flurries.
     private func vary(dt: Float) {
+        // In case none of the scattered snow makes it to the bottom, say because it all came to rest on windows.
+        if snowfallHeld && scatteredUntil > 0 && clock > scatteredUntil { snowfallHeld = false }
         if snowfall != .variable {
             strengthTarget = 1
         } else if clock >= nextShift {
@@ -851,7 +858,7 @@ final class SnowSimulation {
     }
 
     private func updateTarget() {
-        targetFlakes = Int(snowfall.flakesPerMegapoint * strength * width * height / 1_000_000)
+        targetFlakes = snowfallHeld ? 0 : Int(snowfall.flakesPerMegapoint * strength * width * height / 1_000_000)
     }
 
     private static func columnCount(for width: Float, columnWidth: Float) -> Int {

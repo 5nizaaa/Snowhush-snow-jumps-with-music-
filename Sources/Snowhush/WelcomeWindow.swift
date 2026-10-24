@@ -7,6 +7,8 @@ final class WelcomeController: NSObject {
     var scatter: ([ScatterPiece]) -> Void = { _ in }
     var overlayOrigin: () -> CGPoint = { .zero }
     var finished: () -> Void = {}
+    /// Called instead of `scatter` when the window can't be captured and just closes.
+    var skipped: () -> Void = {}
 
     private var window: NSWindow?
     private var crumble: Crumble?
@@ -43,6 +45,7 @@ final class WelcomeController: NSObject {
         view.button.isEnabled = false
         guard let crumble = Crumble(view: view) else {
             window.orderOut(nil)
+            skipped()
             finished()
             return
         }
@@ -182,7 +185,7 @@ private final class Crumble {
         let fromTop = 1 - Double(point.y / bounds.height)
         let x = Double(point.x), y = Double(point.y)
         let broad = valueNoise(x / 46, y / 46) * 0.65 + valueNoise(x / 15 + 7.3, y / 15 + 2.1) * 0.35
-        return fromTop * 0.5 + broad * 0.2 + hash(Int(x * 1.7), Int(y * 1.7)) * 0.035
+        return fromTop * 0.3 + broad * 0.12 + hash(Int(x * 1.7), Int(y * 1.7)) * 0.025
     }
 
     private func updateMask(at time: Double) {
