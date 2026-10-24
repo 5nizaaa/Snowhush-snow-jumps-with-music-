@@ -14,7 +14,9 @@ notes=${2:-"Snowhush $version"}
 repository=mbezruchko/Snowhush
 profile=${NOTARY_PROFILE:-snowhush}
 sparkle_version=2.10.0
+dmgbuild_version=1.6.7
 tools=.build/sparkle-tools
+dmgbuild=.build/dmgbuild/bin/dmgbuild
 plist=Resources/Info.plist
 
 export IDENTITY=${IDENTITY:-$(security find-identity -v -p codesigning | awk -F'"' '/Developer ID Application/ { print $2; exit }')}
@@ -23,6 +25,10 @@ export IDENTITY=${IDENTITY:-$(security find-identity -v -p codesigning | awk -F'
 xcrun notarytool history --keychain-profile "$profile" >/dev/null 2>&1 \
     || { echo "No notarytool profile \"$profile\". Create it with: xcrun notarytool store-credentials $profile" >&2; exit 1; }
 
+if [[ ! -x "$dmgbuild" ]]; then
+    python3 -m venv .build/dmgbuild
+    .build/dmgbuild/bin/pip install -q "dmgbuild==$dmgbuild_version"
+fi
 if [[ ! -x "$tools/bin/generate_appcast" ]]; then
     mkdir -p "$tools"
     curl -fsSL "https://github.com/sparkle-project/Sparkle/releases/download/$sparkle_version/Sparkle-$sparkle_version.tar.xz" | tar -xJ -C "$tools"
@@ -54,11 +60,12 @@ xcrun stapler staple "$app"
 rm "$dist/Snowhush.zip"
 
 echo "Packing the disk image…"
-staging=$(mktemp -d)
-ditto "$app" "$staging/Snowhush.app"
-ln -s /Applications "$staging/Applications"
-hdiutil create -quiet -volname Snowhush -srcfolder "$staging" -ov -format UDZO "$dist/Snowhush.dmg"
-rm -rf "$staging"
+artwork=$(mktemp -d)
+swift scripts/make-dmg-background.swift "$artwork/background.png" 1 >/dev/null
+swift scripts/make-dmg-background.swift "$artwork/background@2x.png" 2 >/dev/null
+tiffutil -cathidpicheck "$artwork/background.png" "$artwork/background@2x.png" -out "$artwork/background.tiff" 2>/dev/null
+"$dmgbuild" -s scripts/dmg-settings.py -D app="$app" -D background="$artwork/background.tiff" Snowhush "$dist/Snowhush.dmg" 2>/dev/null
+rm -rf "$artwork"
 codesign --force --timestamp --sign "$IDENTITY" "$dist/Snowhush.dmg"
 notarize "$dist/Snowhush.dmg"
 xcrun stapler staple "$dist/Snowhush.dmg"

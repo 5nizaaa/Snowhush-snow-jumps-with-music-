@@ -25,6 +25,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, SPUSta
     private var welcome: WelcomeController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if AppMover.moveIfNeeded() {
+            NSApp.terminate(nil)
+            return
+        }
         Preferences.registerDefaults()
         guard let screen = NSScreen.screens.first, let device = MTLCreateSystemDefaultDevice() else {
             NSApp.terminate(nil)
