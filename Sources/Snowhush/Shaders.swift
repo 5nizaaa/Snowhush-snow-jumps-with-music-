@@ -19,6 +19,7 @@ struct Uniforms {
 
 struct Sprite {
     float2 position;
+    float2 velocity;
     float size;
     float alpha;
     float soft;
@@ -36,6 +37,8 @@ struct SpriteOut {
     float soft;
     float4 tint;
     float3 light;
+    float2 streak;
+    float radius;
 };
 
 vertex SpriteOut spriteVertex(uint vid [[vertex_id]],
@@ -43,10 +46,18 @@ vertex SpriteOut spriteVertex(uint vid [[vertex_id]],
                               constant Uniforms &u [[buffer(1)]]) {
     Sprite s = sprites[vid];
     float pixels = s.size * u.scale;
+    // About a 1/55 s exposure, capped so even the fastest grain stays a short smear and never reads as rain.
+    float2 travel = s.velocity * 0.018;
+    float smear = min(length(travel), s.size * 2.2);
+    float2 streak = smear > 0.25 ? normalize(travel) * smear * u.scale : float2(0.0);
+    float extent = max(pixels + length(streak), 2.0);
     SpriteOut out;
     out.position = float4(s.position / u.viewSize * 2.0 - 1.0, 0.0, 1.0);
-    out.pointSize = max(pixels, 2.0);
-    out.alpha = s.alpha * min(pixels / 2.0, 1.0);
+    out.pointSize = extent;
+    out.streak = streak / extent;
+    out.radius = pixels / extent * 0.5;
+    // A streak spreads the same flake over more pixels, so each is fainter.
+    out.alpha = s.alpha * min(pixels / 2.0, 1.0) * pixels / max(pixels + length(streak) * 0.6, 0.001);
     out.soft = s.soft;
     out.tint = float4(s.tintRed, s.tintGreen, s.tintBlue, s.tintAmount);
     out.light = u.light.rgb;
@@ -54,8 +65,15 @@ vertex SpriteOut spriteVertex(uint vid [[vertex_id]],
 }
 
 fragment float4 spriteFragment(SpriteOut in [[stage_in]], float2 coord [[point_coord]]) {
-    float r = length(coord - 0.5) * 2.0;
-    float a = (1.0 - smoothstep(mix(0.6, 0.0, in.soft), 1.0, r)) * in.alpha;
+    // Point coordinates run down the screen; velocities run up.
+    float2 p = float2(coord.x - 0.5, 0.5 - coord.y);
+    float2 half_ = in.streak * 0.5;
+    float span = dot(half_, half_);
+    float t = span > 0.0 ? clamp(dot(p, half_) / span, -1.0, 1.0) : 0.0;
+    float r = length(p - half_ * t) / max(in.radius, 0.001);
+    // Brighter at the head, where the flake is now, than at the tail, where it was.
+    float head = span > 0.0 ? 0.15 + 0.85 * pow(t * 0.5 + 0.5, 1.5) : 1.0;
+    float a = (1.0 - smoothstep(mix(0.6, 0.0, in.soft), 1.0, r)) * in.alpha * head;
     if (a < 0.002) discard_fragment();
     float3 core = float3(0.965, 0.975, 0.995);
     float3 rim = float3(0.62, 0.67, 0.77);

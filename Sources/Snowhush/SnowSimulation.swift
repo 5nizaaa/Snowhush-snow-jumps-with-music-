@@ -4,6 +4,8 @@ import simd
 
 struct Sprite {
     var position: SIMD2<Float>
+    /// Smears fast snow into a short streak, as a camera would.
+    var velocity = SIMD2<Float>(repeating: 0)
     var size: Float
     var alpha: Float
     var soft: Float
@@ -207,6 +209,7 @@ final class SnowSimulation {
         for flake in flakes where count < capacity {
             buffer[count] = Sprite(
                 position: flake.position,
+                velocity: flake.velocity,
                 size: flake.size,
                 alpha: flake.alpha,
                 soft: flake.soft,
@@ -218,7 +221,7 @@ final class SnowSimulation {
             count += 1
         }
         for grain in grains where count < capacity {
-            buffer[count] = Sprite(position: grain.position, size: grain.size, alpha: 0.95, soft: 0.3)
+            buffer[count] = Sprite(position: grain.position, velocity: grain.velocity, size: grain.size, alpha: 0.95, soft: 0.3)
             count += 1
         }
         return count
