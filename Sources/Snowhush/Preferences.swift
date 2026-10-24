@@ -32,6 +32,7 @@ enum Preferences {
     private static let accumulateKey = "accumulate"
     private static let snowOnWindowsKey = "snowOnWindows"
     private static let welcomedKey = "welcomed"
+    private static let showInScreenshotsKey = "showInScreenshots"
 
     static func registerDefaults() {
         let calm = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
@@ -41,6 +42,7 @@ enum Preferences {
             meltSnowKey: true,
             accumulateKey: true,
             snowOnWindowsKey: true,
+            showInScreenshotsKey: false,
         ])
     }
 
@@ -72,5 +74,10 @@ enum Preferences {
     static var behindWindows: Bool {
         get { defaults.bool(forKey: behindWindowsKey) }
         set { defaults.set(newValue, forKey: behindWindowsKey) }
+    }
+
+    static var showInScreenshots: Bool {
+        get { defaults.bool(forKey: showInScreenshotsKey) }
+        set { defaults.set(newValue, forKey: showInScreenshotsKey) }
     }
 }

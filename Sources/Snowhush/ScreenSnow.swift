@@ -34,6 +34,7 @@ final class ScreenSnow {
         self.renderer = renderer
         window = OverlayWindow(screen: screen)
         window.behindWindows = Preferences.behindWindows
+        window.showsInScreenshots = Preferences.showInScreenshots
         view = Self.makeView(device: device, size: screen.frame.size)
 
         renderer.cursorLocation = { [unowned window] in

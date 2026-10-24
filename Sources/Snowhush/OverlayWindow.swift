@@ -7,6 +7,10 @@ final class OverlayWindow: NSWindow {
         didSet { level = behindWindows ? Self.desktopLevel : .statusBar }
     }
 
+    var showsInScreenshots = false {
+        didSet { sharingType = showsInScreenshots ? .readOnly : .none }
+    }
+
     init(screen: NSScreen) {
         super.init(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false)
         isOpaque = false
@@ -17,6 +21,7 @@ final class OverlayWindow: NSWindow {
         animationBehavior = .none
         collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
         level = .statusBar
+        sharingType = .none
         setFrame(screen.frame, display: false)
     }
 

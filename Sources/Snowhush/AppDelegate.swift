@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, SPUSta
     private var meltItem: NSMenuItem!
     private var snowOnWindowsItem: NSMenuItem!
     private var behindWindowsItem: NSMenuItem!
+    private var screenshotsItem: NSMenuItem!
     private var loginItem: NSMenuItem!
     private var observers: [NSObjectProtocol] = []
     private var screensAsleep = false
@@ -131,6 +132,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, SPUSta
         snowOnWindowsItem = add("Snow on Windows", #selector(toggleSnowOnWindows), to: menu)
         menu.addItem(.separator())
         behindWindowsItem = add("Behind Windows", #selector(toggleBehindWindows), to: menu)
+        screenshotsItem = add("Show in Screenshots", #selector(toggleScreenshots), to: menu)
         loginItem = add("Open at Login", #selector(toggleOpenAtLogin), to: menu)
         menu.addItem(.separator())
         let updates = menu.addItem(withTitle: "Check for Updates…", action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)), keyEquivalent: "")
@@ -158,6 +160,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, SPUSta
         snowOnWindowsItem.state = snowOnWindows ? .on : .off
         snowOnWindowsItem.isEnabled = !behindWindows
         behindWindowsItem.state = behindWindows ? .on : .off
+        screenshotsItem.state = Preferences.showInScreenshots ? .on : .off
         loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
     }
 
@@ -194,6 +197,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, SPUSta
             snow.window.behindWindows = behindWindows
             if behindWindows { snow.dropWindowSnow() }
         }
+    }
+
+    @objc private func toggleScreenshots() {
+        Preferences.showInScreenshots.toggle()
+        for snow in screens { snow.window.showsInScreenshots = Preferences.showInScreenshots }
     }
 
     @objc private func toggleOpenAtLogin() {
