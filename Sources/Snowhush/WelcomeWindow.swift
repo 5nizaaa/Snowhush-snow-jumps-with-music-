@@ -82,24 +82,29 @@ private final class WelcomeWindow: NSWindow {
     }
 }
 
-/// Erases a view a few points at a time from the top down, with a ragged edge, handing each erased cell
-/// with its colour to `pieces` so the window seems to fall apart into the snow.
+/// Erases a view from the top down along a ragged, soft-edged front and hands each bit it passes,
+/// with its colour, to `pieces`, so the window seems to fall apart into the snow.
 private final class Crumble {
     struct Cell {
         let point: CGPoint
         let color: SIMD3<Float>
         let delay: Double
-        let column: Int
-        let row: Int
     }
 
     private let view: NSView
+    /// Spacing of the pieces that fly off.
     private let cell: CGFloat = 6
+    /// Spacing of the mask: fine enough that its edge reads as a line, not as squares.
+    private let grain: CGFloat = 2
+    /// Seconds over which a spot of the mask fades out once the front reaches it.
+    private let feather = 0.05
     private let columns: Int
     private let rows: Int
+    /// When the front reaches each mask pixel, top row first.
+    private let front: [Double]
     private var cells: [Cell]
     private var next = 0
-    private var alpha: [UInt8]
+    private var pixels: [UInt8]
     private let mask = CALayer()
     private var timer: Timer?
     private var started: CFTimeInterval = 0
@@ -110,33 +115,38 @@ private final class Crumble {
         view.cacheDisplay(in: view.bounds, to: rep)
         self.view = view
         let bounds = view.bounds
-        columns = Int((bounds.width / cell).rounded(.up))
-        rows = Int((bounds.height / cell).rounded(.up))
-        alpha = Array(repeating: 255, count: columns * rows)
-        let scale = CGFloat(rep.pixelsWide) / bounds.width
+        columns = Int((bounds.width / grain).rounded(.up))
+        rows = Int((bounds.height / grain).rounded(.up))
+        pixels = Array(repeating: 255, count: columns * rows * 4)
 
-        var cells: [Cell] = []
+        var front = [Double](repeating: 0, count: columns * rows)
         for row in 0..<rows {
             for column in 0..<columns {
-                let point = CGPoint(x: (CGFloat(column) + 0.5) * cell, y: (CGFloat(row) + 0.5) * cell)
+                let point = CGPoint(x: (CGFloat(column) + 0.5) * grain, y: bounds.height - (CGFloat(row) + 0.5) * grain)
+                front[row * columns + column] = Crumble.arrival(at: point, in: bounds)
+            }
+        }
+        self.front = front
+
+        let scale = CGFloat(rep.pixelsWide) / bounds.width
+        var cells: [Cell] = []
+        for y in stride(from: cell / 2, to: bounds.height, by: cell) {
+            for x in stride(from: cell / 2, to: bounds.width, by: cell) {
+                let point = CGPoint(x: x, y: y)
                 // Bitmap rows run top-down; the view's run bottom-up.
-                let px = min(Int(point.x * scale), rep.pixelsWide - 1)
-                let py = min(Int((bounds.height - point.y) * scale), rep.pixelsHigh - 1)
+                let px = min(Int(x * scale), rep.pixelsWide - 1)
+                let py = min(Int((bounds.height - y) * scale), rep.pixelsHigh - 1)
                 guard let sample = rep.colorAt(x: px, y: py)?.usingColorSpace(.sRGB), sample.alphaComponent > 0.1 else { continue }
-                let fromTop = 1 - Double(point.y / bounds.height)
-                let ragged = Double(Crumble.noise(column, row))
                 cells.append(Cell(
                     point: point,
                     color: SIMD3(Float(sample.redComponent), Float(sample.greenComponent), Float(sample.blueComponent)),
-                    delay: fromTop * 0.52 + ragged * 0.2,
-                    column: column,
-                    row: row
+                    delay: Crumble.arrival(at: point, in: bounds)
                 ))
             }
         }
         cells.sort { $0.delay < $1.delay }
         self.cells = cells
-        duration = (cells.last?.delay ?? 0) + 0.05
+        duration = (front.max() ?? 0) + feather
     }
 
     func start(pieces: @escaping ([Cell]) -> Void, completion: @escaping () -> Void) {
@@ -144,7 +154,7 @@ private final class Crumble {
         mask.frame = view.bounds
         mask.contentsGravity = .resize
         view.layer?.mask = mask
-        updateMask()
+        updateMask(at: 0)
         started = CACurrentMediaTime()
         timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { [weak self] timer in
             guard let self else {
@@ -154,15 +164,11 @@ private final class Crumble {
             let elapsed = CACurrentMediaTime() - self.started
             var batch: [Cell] = []
             while self.next < self.cells.count, self.cells[self.next].delay <= elapsed {
-                let cell = self.cells[self.next]
-                self.alpha[(self.rows - 1 - cell.row) * self.columns + cell.column] = 0
-                batch.append(cell)
+                batch.append(self.cells[self.next])
                 self.next += 1
             }
-            if !batch.isEmpty {
-                self.updateMask()
-                pieces(batch)
-            }
+            self.updateMask(at: elapsed)
+            if !batch.isEmpty { pieces(batch) }
             if elapsed >= self.duration {
                 timer.invalidate()
                 completion()
@@ -170,9 +176,18 @@ private final class Crumble {
         }
     }
 
-    private func updateMask() {
-        var pixels = [UInt8](repeating: 0, count: alpha.count * 4)
-        for (i, a) in alpha.enumerated() {
+    /// The front sweeps down in about half a second, held back here and there by smooth noise
+    /// and roughened by a fine grain so its edge looks like crumbling snow.
+    private static func arrival(at point: CGPoint, in bounds: CGRect) -> Double {
+        let fromTop = 1 - Double(point.y / bounds.height)
+        let x = Double(point.x), y = Double(point.y)
+        let broad = valueNoise(x / 46, y / 46) * 0.65 + valueNoise(x / 15 + 7.3, y / 15 + 2.1) * 0.35
+        return fromTop * 0.5 + broad * 0.2 + hash(Int(x * 1.7), Int(y * 1.7)) * 0.035
+    }
+
+    private func updateMask(at time: Double) {
+        for i in 0..<front.count {
+            let a = UInt8(max(0, min(1, (front[i] - time) / feather)) * 255)
             pixels[i * 4] = a
             pixels[i * 4 + 1] = a
             pixels[i * 4 + 2] = a
@@ -199,14 +214,20 @@ private final class Crumble {
         CATransaction.commit()
     }
 
-    private static func noise(_ x: Int, _ y: Int) -> Float {
-        func hash(_ x: Int, _ y: Int) -> Float {
-            var n = UInt32(truncatingIfNeeded: x &* 374_761_393 &+ y &* 668_265_263)
-            n = (n ^ (n >> 13)) &* 1_274_126_177
-            return Float(n & 0xFFFF) / 65535
-        }
-        let coarse = hash(x / 6, y / 6) * 0.6
-        return coarse + hash(x, y) * 0.4
+    private static func valueNoise(_ x: Double, _ y: Double) -> Double {
+        let x0 = Int(floor(x)), y0 = Int(floor(y))
+        let fx = x - floor(x), fy = y - floor(y)
+        let u = fx * fx * (3 - 2 * fx), v = fy * fy * (3 - 2 * fy)
+        let top = hash(x0, y0) + (hash(x0 + 1, y0) - hash(x0, y0)) * u
+        let bottom = hash(x0, y0 + 1) + (hash(x0 + 1, y0 + 1) - hash(x0, y0 + 1)) * u
+        return top + (bottom - top) * v
+    }
+
+    private static func hash(_ x: Int, _ y: Int) -> Double {
+        var n = UInt32(truncatingIfNeeded: x &* 374_761_393 &+ y &* 668_265_263)
+        n = (n ^ (n >> 13)) &* 1_274_126_177
+        n ^= n >> 16
+        return Double(n & 0xFFFF) / 65535
     }
 }
 
@@ -220,7 +241,8 @@ private final class WelcomeView: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
 
-        let icon = NSImageView(image: NSApp.applicationIconImage)
+        // The bundled artwork, not applicationIconImage, which follows the system's tinted or clear icon style.
+        let icon = NSImageView(image: Bundle.main.image(forResource: "AppIcon") ?? NSApp.applicationIconImage)
         icon.imageScaling = .scaleProportionallyUpOrDown
         icon.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([icon.widthAnchor.constraint(equalToConstant: 112), icon.heightAnchor.constraint(equalToConstant: 112)])
@@ -242,6 +264,9 @@ private final class WelcomeView: NSView {
             .paragraphStyle: Self.paragraph(lineHeight: 1.3),
         ])
         body.preferredMaxLayoutWidth = 330
+        // Selectable labels swap in a field editor on click, which re-lays the text out without its paragraph style.
+        title.isSelectable = false
+        body.isSelectable = false
 
         let stack = NSStackView(views: [icon, title, body, button])
         stack.orientation = .vertical
