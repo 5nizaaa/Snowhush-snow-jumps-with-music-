@@ -47,6 +47,7 @@ final class ScreenSnow {
             light.update(screen: self.screen, now: now)
             return (light.light, light.shadowTint)
         }
+        renderer.interactiveFrameRate = Self.interactiveFrameRate(of: screen)
         measure()
         view.delegate = renderer
         window.contentView = view
@@ -59,7 +60,12 @@ final class ScreenSnow {
         Renderer.fitDrawable(of: view)
         simulation.resize(width: Float(screen.frame.width), height: Float(screen.frame.height))
         light.invalidate()
+        renderer.interactiveFrameRate = Self.interactiveFrameRate(of: screen)
         measure()
+    }
+
+    private static func interactiveFrameRate(of screen: NSScreen) -> Int {
+        min(max(screen.maximumFramesPerSecond, 60), 120)
     }
 
     func setActive(_ active: Bool) {

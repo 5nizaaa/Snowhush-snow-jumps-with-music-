@@ -38,7 +38,8 @@ final class WindowTracker {
     /// `eager` polls every frame, e.g. while a mouse button is down and a drag may be starting.
     func poll(now: CFTimeInterval, eager: Bool) -> WindowUpdate? {
         let interval = now - lastQuery
-        guard interval >= (eager || now - lastChange < 0.6 ? 0 : 0.2) else { return nil }
+        // Even while windows move, 60 looks a second are plenty: the snow follows a smoothed path of the window anyway.
+        guard interval >= (eager || now - lastChange < 0.6 ? 1.0 / 62 : 0.2) else { return nil }
         lastQuery = now
         let surfaces = query(now: now)
         guard surfaces != previous else { return nil }

@@ -23,6 +23,8 @@ enum RendererError: Error {
 final class Renderer: NSObject, MTKViewDelegate {
     var cursorLocation: () -> SIMD2<Float> = { SIMD2(-10_000, -10_000) }
     var windowSurfaces: (CFTimeInterval) -> WindowUpdate? = { _ in nil }
+    /// Frames per second while the snow is being disturbed: the display's highest rate, up to 120 on ProMotion screens.
+    var interactiveFrameRate = 60
     var sceneLight: (CFTimeInterval) -> (light: SIMD3<Float>, shadowTint: SIMD4<Float>) = { _ in (SIMD3(repeating: 1), .zero) }
     private var ambient: (light: SIMD3<Float>, shadowTint: SIMD4<Float>) = (SIMD3(repeating: 1), .zero)
 
@@ -90,7 +92,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             simulation.updateWindows(update.surfaces, interval: update.interval, parked: update.parked)
         }
         let changed = simulation.step(dt: dt, cursor: cursorLocation())
-        let frameRate = simulation.isInteracting ? 60 : 30
+        let frameRate = simulation.isInteracting ? interactiveFrameRate : 30
         if view.preferredFramesPerSecond != frameRate { view.preferredFramesPerSecond = frameRate }
         idleFrames = changed ? 0 : idleFrames + 1
         // A still pile only needs a slow refresh for its glints.
