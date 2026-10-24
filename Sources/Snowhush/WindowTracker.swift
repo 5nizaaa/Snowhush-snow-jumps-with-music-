@@ -42,15 +42,25 @@ final class WindowTracker {
     /// When an auto-hidden Dock came out; nil while it is away.
     private var dockShownAt: CFTimeInterval?
     private var alphas: [CGWindowID: Double] = [:]
+    /// Windows on their way out before the window list shows it, as during a minimize's genie animation;
+    /// left out until they're gone or their time is up.
+    private var leaving: [CGWindowID: CFTimeInterval] = [:]
+    private var pressedMinimize: CGWindowID?
+    private var buttonDown = false
     private var slidingUntil: CFTimeInterval = -10
+    /// When each floating panel carrying snow (Spotlight and the like) first showed.
+    private var panelsShownAt: [CGWindowID: CFTimeInterval] = [:]
 
     /// Returns the windows when they changed since the last poll.
     /// `eager` polls every frame, e.g. while a mouse button is down and a drag may be starting.
     func poll(now: CFTimeInterval, eager: Bool) -> WindowUpdate? {
         let interval = now - lastQuery
+        let minimizing = watchForMinimize(now: now)
+        // Panels like Spotlight vanish on a keystroke; once one has stayed a while it's more likely a long-lived floating window.
+        let panelOpen = panelsShownAt.values.contains { now - $0 < 20 }
         // Even while windows move, 60 looks a second are plenty: the snow follows a smoothed path of the window anyway.
-        let closely = eager || now - lastChange < 0.6 || dockShownAt != nil || pointerAtBottomEdge || Self.windowsMayChange
-        guard interval >= (closely ? 1.0 / 62 : 0.2) else { return nil }
+        let closely = eager || now - lastChange < 0.6 || dockShownAt != nil || pointerAtBottomEdge || panelOpen || Self.windowsMayChange
+        guard minimizing || interval >= (closely ? 1.0 / 62 : 0.2) else { return nil }
         lastQuery = now
         let surfaces = query(now: now)
         guard surfaces != previous else { return nil }
@@ -78,6 +88,61 @@ final class WindowTracker {
             shift = dx
         }
         return shift != nil
+    }
+
+    /// Catches a minimize as it starts, from the click on the window's minimize button or ⌘M: the window list
+    /// shows nothing until the genie animation is over. Returns whether a window just started leaving.
+    private func watchForMinimize(now: CFTimeInterval) -> Bool {
+        if !leaving.isEmpty { leaving = leaving.filter { $0.value > now } }
+        var started = false
+        let down = NSEvent.pressedMouseButtons & 1 != 0
+        if down && !buttonDown {
+            pressedMinimize = minimizeButton(at: pointer, now: now)
+        } else if !down && buttonDown, let id = pressedMinimize {
+            if minimizeButton(at: pointer, now: now) == id {
+                leaving[id] = now + 1
+                started = true
+            }
+            pressedMinimize = nil
+        }
+        buttonDown = down
+
+        let flags = CGEventSource.flagsState(.combinedSessionState)
+        // 0x2E is the M key.
+        if flags.contains(.maskCommand), CGEventSource.keyState(.combinedSessionState, key: 0x2E),
+           let app = NSWorkspace.shared.frontmostApplication?.processIdentifier {
+            let windows = Self.windowList(now: now).filter {
+                $0[kCGWindowOwnerPID as String] as? Int32 == app && $0[kCGWindowLayer as String] as? Int == 0
+            }
+            // ⌥⌘M minimizes all of the app's windows.
+            for entry in flags.contains(.maskAlternate) ? windows : Array(windows.prefix(1)) {
+                guard let id = entry[kCGWindowNumber as String] as? CGWindowID, leaving[id] == nil else { continue }
+                leaving[id] = now + 1
+                started = true
+            }
+        }
+        return started
+    }
+
+    /// The snowy window whose minimize button is under the pointer. The buttons sit in a row 23 points apart, the
+    /// close button as far from the window's left edge as from its top, however tall the title bar.
+    private func minimizeButton(at point: CGPoint, now: CFTimeInterval) -> CGWindowID? {
+        let front = Self.windowList(now: now).first { entry in
+            guard let layer = entry[kCGWindowLayer as String] as? Int, layer >= 0, layer < maxLayer,
+                  entry[kCGWindowOwnerPID as String] as? Int32 != ownPID,
+                  (entry[kCGWindowAlpha as String] as? Double ?? 0) > 0.3,
+                  let info = entry[kCGWindowBounds as String] as? NSDictionary,
+                  let bounds = CGRect(dictionaryRepresentation: info)
+            else { return false }
+            return bounds.contains(point)
+        }
+        guard let front, let id = front[kCGWindowNumber as String] as? CGWindowID, previous.contains(where: { $0.id == id }),
+              let info = front[kCGWindowBounds as String] as? NSDictionary,
+              let bounds = CGRect(dictionaryRepresentation: info)
+        else { return nil }
+        let dx = point.x - bounds.minX
+        let dy = point.y - bounds.minY
+        return (9...33).contains(dy) && abs(dx - dy - 23) <= 7 ? id : nil
     }
 
     /// A click just ended or a modifier key changed: a window may be closing (its close button, ⌘W),
@@ -175,7 +240,11 @@ final class WindowTracker {
         var surfaces: [WindowSurface] = []
         var dockOut = false
         var fresh: [CGWindowID: Double] = [:]
-        defer { alphas = fresh }
+        var panels: [CGWindowID: CFTimeInterval] = [:]
+        defer {
+            alphas = fresh
+            panelsShownAt = panels
+        }
 
         for entry in list {
             guard let pid = entry[kCGWindowOwnerPID as String] as? Int32, pid != ownPID,
@@ -187,6 +256,7 @@ final class WindowTracker {
             else { continue }
             let id = entry[kCGWindowNumber as String] as? CGWindowID ?? 0
             fresh[id] = alpha
+            if leaving[id] != nil { continue }
             // A window fading out is closing or hiding: its snow falls as the fade begins.
             let fading = alpha < 0.98 && alpha < (alphas[id] ?? 0) - 0.01
 
@@ -214,6 +284,7 @@ final class WindowTracker {
                 let corner = shelf ? Dock.cornerRadius(height: bounds.height) : capsule ? min(bounds.height / 2, 32) : 18
                 let radius = min(corner, bounds.width / 2, bounds.height / 2)
                 let region = CGRect(x: frame.minX, y: frame.maxY - radius, width: frame.width, height: 40 + radius)
+                if layer > 0 && !shelf { panels[id] = panelsShownAt[id] ?? now }
                 surfaces.append(WindowSurface(
                     id: id,
                     frame: frame,
