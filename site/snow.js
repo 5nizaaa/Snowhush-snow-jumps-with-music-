@@ -17,11 +17,12 @@
   // Snow builds up half again as fast as in the app, so a visitor sees a setting change the drift sooner.
   const DEPOSITION = 1.1 * 1.5;
   const MAX_GRAINS = 4000;
+  const MAX_MOTES = 800;
   const PHASE_WRAP = 20 * Math.PI;
   const DENSITY = { off: 0, light: 150, steady: 380, heavy: 800, variable: 380 };
   const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
 
-  const settings = { snowfall: 'steady', accumulate: true, melt: true, windows: true, behind: false, login: false, quit: false };
+  const settings = { snowfall: 'steady', accumulate: true, melt: true, windows: true, behind: false, screenshots: false, login: false, quit: false };
   const variation = { strength: 1, target: 1, next: 0, clock: 0 };
 
   const rand = (a, b) => a + Math.random() * (b - a);
@@ -219,18 +220,22 @@
 
   const SPRITE_VERTEX = `#version 300 es
     in vec2 aPosition;
-    in vec3 aLook;
+    in vec4 aLook;
     uniform vec2 uView;
     uniform float uScale;
+    uniform float uTime;
     uniform int uNight;
     ${LIGHT}
     out float vAlpha;
     out float vSoft;
     out float vLight;
     out float vGrow;
+    out float vLump;
+    out float vSpin;
     void main() {
       float light = uNight == 1 && uLamp.z > 0.5 ? lampCone(aPosition) : 0.0;
-      float grow = 1.0 + 1.6 * light;
+      // A lump's ragged edge reaches past its nominal size.
+      float grow = (1.0 + 1.6 * light) * (aLook.w > 0.0 ? 1.3 : 1.0);
       float pixels = aLook.x * uScale;
       gl_Position = vec4(aPosition.x / uView.x * 2.0 - 1.0, 1.0 - aPosition.y / uView.y * 2.0, 0.0, 1.0);
       gl_PointSize = max(pixels * grow, 2.0);
@@ -238,6 +243,8 @@
       vSoft = aLook.z;
       vLight = light;
       vGrow = grow;
+      vLump = aLook.w;
+      vSpin = aLook.w > 0.0 ? uTime * (aLook.w - 0.5) * 9.0 + aLook.w * 40.0 : 0.0;
     }
   `;
 
@@ -248,14 +255,23 @@
     in float vSoft;
     in float vLight;
     in float vGrow;
+    in float vLump;
+    in float vSpin;
     uniform int uNight;
     uniform vec3 uLamp;
     out vec4 outColor;
     void main() {
-      float r = length(gl_PointCoord - 0.5) * 2.0;
+      vec2 p = gl_PointCoord - 0.5;
+      float r = length(p) * 2.0;
       float d = r * vGrow;
+      float shading = 0.0;
+      if (vLump > 0.0) {
+        float angle = atan(p.y, p.x) + vSpin;
+        d /= 1.0 + 0.14 * sin(3.0 * angle) + 0.08 * sin(5.0 * angle + vLump * 21.0) + 0.05 * sin(2.0 * angle + vLump * 9.0);
+        shading = clamp(dot(p * 2.0 * vGrow, vec2(0.45, 0.6)), 0.0, 1.0) * 0.4;
+      }
       float a = (1.0 - smoothstep(mix(0.6, 0.0, vSoft), 1.0, d)) * vAlpha;
-      vec3 color = mix(vec3(0.965, 0.975, 0.995), vec3(0.62, 0.67, 0.77), smoothstep(0.35, 1.0, d) * 0.65);
+      vec3 color = mix(vec3(0.965, 0.975, 0.995), vec3(0.62, 0.67, 0.77), clamp(smoothstep(0.35, 1.0, d) * 0.65 + shading, 0.0, 1.0));
       if (uNight == 1) {
         vec3 warm = vec3(1.0, 0.9, 0.74);
         float ambient = uLamp.z > 0.5 ? 0.22 : 0.55;
@@ -394,6 +410,7 @@
       this.ledges = [...section.querySelectorAll('[data-ledge]')].map(element => ({ element, layer: new Layer(LEDGE_DEPTH, true) }));
       this.flakes = [];
       this.grains = [];
+      this.motes = [];
       this.cursor = null;
       this.cursorVelocity = [0, 0];
       this.time = rand(0, 100);
@@ -425,9 +442,9 @@
       const position = gl.getAttribLocation(this.sprite.program, 'aPosition');
       const look = gl.getAttribLocation(this.sprite.program, 'aLook');
       gl.enableVertexAttribArray(position);
-      gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 20, 0);
+      gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 24, 0);
       gl.enableVertexAttribArray(look);
-      gl.vertexAttribPointer(look, 3, gl.FLOAT, false, 20, 8);
+      gl.vertexAttribPointer(look, 4, gl.FLOAT, false, 24, 8);
       gl.bindVertexArray(null);
       this.pileVAO = gl.createVertexArray();
       this.textures = new Map();
@@ -538,6 +555,7 @@
       this.trackCursor(pointer, dt);
       this.advanceFlakes(dt);
       this.advanceGrains(dt);
+      this.advanceMotes(dt);
       this.settle(dt);
       const target = this.target();
       while (this.flakes.length < target) this.flakes.push(this.makeFlake(-rand(0, this.height * 0.8)));
@@ -640,7 +658,10 @@
         let gone = g.x < -10 || g.x > this.width + 10 || g.y > this.height + 20;
         if (!gone && g.vy >= 0) {
           const hit = this.landing(g.x, from, g.y);
-          if (hit) {
+          if (hit && g.lump) {
+            this.burst(g, hit.layer);
+            gone = true;
+          } else if (hit) {
             const missed = hit.layer.deposit(g.area, g.x);
             this.dropPast(hit.layer, missed, g.x, g.vx * 0.5);
             gone = true;
@@ -650,6 +671,72 @@
           grains[i] = grains[grains.length - 1];
           grains.pop();
         }
+      }
+    }
+
+    advanceMotes(dt) {
+      const damping = Math.exp(-3.2 * dt);
+      const drift = this.wind() * 0.4;
+      const motes = this.motes;
+      for (let i = motes.length - 1; i >= 0; i--) {
+        const m = motes[i];
+        m.age += dt;
+        if (m.age >= m.life) {
+          motes[i] = motes[motes.length - 1];
+          motes.pop();
+          continue;
+        }
+        m.vy += 35 * dt;
+        m.vx *= damping;
+        m.vy *= damping;
+        m.x += (m.vx + drift) * dt;
+        m.y += m.vy * dt;
+      }
+    }
+
+    /// A few columns at a time hold together as a lump; the rest pours off as powder.
+    throwLump(area, [x, y]) {
+      const pieces = Math.floor(area / 90) + 1;
+      const share = area / pieces;
+      for (let k = 0; k < pieces && this.grains.length < MAX_GRAINS; k++) {
+        this.grains.push({
+          x: x + rand(-2, 2),
+          y: y + rand(-1, 1),
+          // Lumps break away a moment before the powder around them, so a falling sheet comes apart.
+          vx: rand(-25, 25),
+          vy: rand(0, 80),
+          area: share,
+          size: Math.min(11, Math.sqrt(share) * 1.05),
+          lump: rand(0.05, 1),
+        });
+      }
+    }
+
+    /// A lump hitting the snow: most of it packs in where it lands, a few crumbs hop off and a puff of powder rises.
+    burst(lump, layer) {
+      const impact = Math.max(0, lump.vy);
+      const force = Math.min(Math.max(impact / 900, 0.35), 1.3);
+      const crumbs = lump.area * 0.18;
+      for (const spot of [-0.3, 0, 0.3]) {
+        const x = lump.x + spot * lump.size;
+        this.dropPast(layer, layer.deposit((lump.area - crumbs) / 3, x), x, lump.vx * 0.3);
+      }
+      const surface = layer.surface(layer.clamped(lump.x));
+      this.release(crumbs, [lump.x, surface - 1], [lump.vx * 0.3, -impact * rand(0.08, 0.16)], [lump.size * 0.4, 1], 0.6);
+      const count = Math.min(MAX_MOTES - this.motes.length, Math.floor(2 + lump.size * 0.6 * force));
+      for (let k = 0; k < count; k++) {
+        const angle = rand(0.15, Math.PI - 0.15);
+        const speed = rand(25, 110) * force;
+        this.motes.push({
+          x: lump.x + rand(-0.5, 0.5) * lump.size,
+          y: surface - rand(0, lump.size * 0.4),
+          vx: Math.cos(angle) * speed * 1.4 + lump.vx * 0.2,
+          vy: -Math.sin(angle) * speed * 0.6,
+          size: rand(0.3, 0.6) * lump.size + 1,
+          alpha: rand(0.1, 0.22),
+          age: 0,
+          life: rand(0.45, 0.9),
+        });
       }
     }
 
@@ -706,13 +793,26 @@
       return [left ? layer.x - 0.75 : layer.x + layer.width + 0.75, layer.surface(end)];
     }
 
-    /// Lets go of every window's snow at once, which then falls as loose clumps.
+    /// Lets go of every window's snow at once: it falls as lumps and loose powder.
     shed() {
       for (const { layer } of this.ledges) {
-        for (let i = 0; i < layer.count; i += 4) {
-          let area = 0;
-          for (let k = i; k < Math.min(i + 4, layer.count); k++) area += layer.h[k] * COLUMN;
-          if (area > 0.05) this.release(area, [layer.centerX(Math.min(i + 2, layer.count - 1)), layer.surface(i)], [rand(-10, 10), 0], [COLUMN * 2, 2]);
+        let start = 0;
+        while (start < layer.count) {
+          const end = Math.min(layer.count, start + Math.floor(rand(2, 7)));
+          let area = 0, top = Infinity, bottom = -Infinity;
+          for (let i = start; i < end; i++) {
+            if (layer.h[i] <= 0.05) continue;
+            area += layer.h[i] * COLUMN;
+            top = Math.min(top, layer.surface(i));
+            bottom = Math.max(bottom, layer.floorY(i));
+          }
+          const cohesion = area > 14 ? rand(0.4, 0.7) : 0;
+          for (let i = start; i < end; i++) {
+            const h = layer.h[i];
+            if (h > 0.05) this.release(h * COLUMN * (1 - cohesion), [layer.centerX(i), layer.floorY(i)], [0, 0], [COLUMN / 2, h], 0.25);
+          }
+          if (cohesion > 0) this.throwLump(area * cohesion, [(layer.centerX(start) + layer.centerX(end - 1)) / 2, (top + bottom) / 2]);
+          start = end;
         }
         layer.clear();
       }
@@ -721,6 +821,7 @@
     clear() {
       this.flakes.length = 0;
       this.grains.length = 0;
+      this.motes.length = 0;
       this.ground.clear();
       for (const { layer } of this.ledges) layer.clear();
     }
@@ -874,21 +975,28 @@
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
       }
 
-      const total = this.flakes.length + this.grains.length;
+      const total = this.flakes.length + this.grains.length + this.motes.length;
       if (!total) return;
-      if (this.spriteData.length < total * 5) this.spriteData = new Float32Array(Math.ceil(total * 1.5) * 5);
+      if (this.spriteData.length < total * 6) this.spriteData = new Float32Array(Math.ceil(total * 1.5) * 6);
       const data = this.spriteData;
       let k = 0;
       for (const f of this.flakes) {
-        data[k++] = f.x; data[k++] = f.y; data[k++] = f.size; data[k++] = f.alpha; data[k++] = f.soft;
+        data[k++] = f.x; data[k++] = f.y; data[k++] = f.size; data[k++] = f.alpha; data[k++] = f.soft; data[k++] = 0;
       }
       for (const g of this.grains) {
-        data[k++] = g.x; data[k++] = g.y; data[k++] = g.size; data[k++] = 0.95; data[k++] = 0.3;
+        data[k++] = g.x; data[k++] = g.y; data[k++] = g.size;
+        data[k++] = g.lump ? 0.97 : 0.95; data[k++] = g.lump ? 0.2 : 0.3; data[k++] = g.lump || 0;
+      }
+      for (const m of this.motes) {
+        const t = m.age / m.life;
+        data[k++] = m.x; data[k++] = m.y; data[k++] = m.size * (1 + t);
+        data[k++] = m.alpha * Math.min(1, m.age / 0.06) * Math.pow(1 - t, 1.5); data[k++] = 1; data[k++] = 0;
       }
       gl.useProgram(this.sprite.program);
       const s = this.sprite.uniforms;
       gl.uniform2f(s.uView, this.width, this.height);
       gl.uniform1f(s.uScale, this.dpr);
+      gl.uniform1f(s.uTime, this.time % 1000);
       gl.uniform1i(s.uNight, this.night ? 1 : 0);
       gl.uniform3f(s.uLamp, ...lamp);
       gl.bindVertexArray(this.spriteVAO);
@@ -1010,7 +1118,70 @@
       reflect();
       scenes.forEach(scene => scene.draw());
       wake();
+      if (item.dataset.toggle === 'screenshots') capture();
     });
+  }
+
+  // MARK: - Screenshot
+
+  let shownCapture = null;
+
+  /// Floats a screenshot of the page in the corner, as macOS does: with the snow in it only when Show in Screenshots is on.
+  function capture() {
+    shownCapture?.remove();
+    const width = Math.min(240, innerWidth * 0.42);
+    const scale = width / innerWidth;
+    const frame = document.createElement('div');
+    frame.className = 'capture';
+    frame.setAttribute('aria-hidden', 'true');
+    frame.inert = true;
+    frame.style.width = `${width}px`;
+    frame.style.height = `${innerHeight * scale}px`;
+    const stage = document.createElement('div');
+    stage.className = 'capture-stage';
+    stage.style.width = `${innerWidth}px`;
+    stage.style.height = `${innerHeight}px`;
+    stage.style.transform = `scale(${scale})`;
+
+    for (const block of document.querySelectorAll('body > header, body > main, body > footer')) {
+      const rect = block.getBoundingClientRect();
+      if (rect.bottom <= 0 || rect.top >= innerHeight) continue;
+      const copy = block.cloneNode(true);
+      for (const element of [copy, ...copy.querySelectorAll('[id], .reveal')]) {
+        element.removeAttribute('id');
+        element.classList.remove('reveal');
+      }
+      Object.assign(copy.style, { position: 'absolute', left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, margin: '0' });
+      const originals = block.querySelectorAll('canvas');
+      copy.querySelectorAll('canvas').forEach((target, i) => {
+        const source = originals[i];
+        const scene = scenes.find(s => s.canvas === source);
+        if (scene) {
+          if (!settings.screenshots) {
+            target.remove();
+            return;
+          }
+          // A WebGL canvas can only be read right after it's drawn.
+          scene.draw();
+        }
+        target.width = source.width;
+        target.height = source.height;
+        target.getContext('2d').drawImage(source, 0, 0);
+      });
+      stage.append(copy);
+    }
+
+    frame.append(stage);
+    document.body.append(frame);
+    shownCapture = frame;
+    setTimeout(() => {
+      if (reduceMotion.matches) {
+        frame.remove();
+        return;
+      }
+      frame.classList.add('leaving');
+      frame.addEventListener('animationend', () => frame.remove(), { once: true });
+    }, 3600);
   }
 
   function reflect() {

@@ -10,7 +10,7 @@ Mac users who spend long hours at their desk and want a little atmosphere on the
 
 ## Product Purpose
 
-Snowhush is a lightweight native macOS menu-bar app. Soft snow falls over the desktop, settles into drifts at the bottom of the screen and on the top edges of windows (following their rounded corners), can be swept away with the cursor with real granular physics, slides off windows that are dragged or shaken, and falls when a window closes. Options: Snowfall (Off, Light, Steady, Heavy, Variable), Accumulate, Melt Snow, Snow on Windows, Behind Windows, Open at Login. It uses about 6% of one CPU core and 65 MB of memory.
+Snowhush is a lightweight native macOS menu-bar app. Soft snow falls over the desktop, settles into drifts at the bottom of the screen, on the top edges of windows (following their rounded corners) and on the Dock, can be swept away with the cursor with real granular physics, slides off windows that are dragged or shaken, and drops in lumps that burst into powder when a window closes or minimizes. It stays out of screenshots and screen sharing and spends less on battery. Options: Snowfall (Off, Light, Steady, Heavy, Variable), Accumulate, Melt Snow, Snow on Windows, Behind Windows, Show in Screenshots, Open at Login. It uses about 6% of one CPU core and 65 MB of memory.
 
 The site's one goal is the download: a .dmg from GitHub Releases. Success is a visitor who plays with the snow on the page and clicks Download.
 
