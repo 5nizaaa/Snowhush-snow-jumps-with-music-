@@ -2,6 +2,7 @@
 # Builds, signs, notarizes and publishes a release on GitHub.
 # The release carries Snowhush.dmg, which the site's Download button and Sparkle both fetch,
 # and appcast.xml, which the app reads from the latest release to find updates.
+# When the Homebrew tap repository exists (HOMEBREW_TAP, default mbezruchko/homebrew-tap), its cask follows along.
 #
 # Usage: ./release.sh <version> [notes]
 # Needs: a "Developer ID Application" identity, a notarytool keychain profile (NOTARY_PROFILE, default "snowhush"),
@@ -84,3 +85,16 @@ git push -q origin HEAD
 gh release create "v$version" "$dist/Snowhush.dmg" "$dist/appcast/appcast.xml" \
     --repo "$repository" --title "Snowhush $version" --notes "$notes"
 echo "Released https://github.com/$repository/releases/tag/v$version"
+
+tap_repository=${HOMEBREW_TAP:-mbezruchko/homebrew-tap}
+if gh repo view "$tap_repository" >/dev/null 2>&1; then
+    echo "Updating the Homebrew cask…"
+    tap=$(mktemp -d)
+    gh repo clone "$tap_repository" "$tap" -- -q
+    mkdir -p "$tap/Casks"
+    scripts/make-cask.sh "$version" "$dist/Snowhush.dmg" > "$tap/Casks/snowhush.rb"
+    git -C "$tap" add Casks/snowhush.rb
+    git -C "$tap" commit -qm "snowhush $version"
+    git -C "$tap" push -q
+    rm -rf "$tap"
+fi
