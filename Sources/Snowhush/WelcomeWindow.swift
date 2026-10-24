@@ -185,7 +185,7 @@ private final class Crumble {
         let fromTop = 1 - Double(point.y / bounds.height)
         let x = Double(point.x), y = Double(point.y)
         let broad = valueNoise(x / 46, y / 46) * 0.65 + valueNoise(x / 15 + 7.3, y / 15 + 2.1) * 0.35
-        return fromTop * 0.3 + broad * 0.12 + hash(Int(x * 1.7), Int(y * 1.7)) * 0.025
+        return fromTop * 0.5 + broad * 0.2 + hash(Int(x * 1.7), Int(y * 1.7)) * 0.035
     }
 
     private func updateMask(at time: Double) {
