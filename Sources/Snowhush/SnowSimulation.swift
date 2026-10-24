@@ -307,7 +307,7 @@ final class SnowSimulation {
         parking.removeAll()
     }
 
-    func updateWindows(_ surfaces: [WindowSurface], interval: Float, parked: Set<CGWindowID> = []) {
+    func updateWindows(_ surfaces: [WindowSurface], interval: Float, parked: Set<CGWindowID> = [], elsewhere: Set<CGWindowID> = []) {
         var seen = Set<CGWindowID>()
         for surface in surfaces {
             let left = Float(surface.frame.minX) + ledgeInset
@@ -343,7 +343,9 @@ final class SnowSimulation {
 
         for id in ledges.keys where !seen.contains(id) {
             guard let ledge = ledges.removeValue(forKey: id) else { continue }
-            if !parked.contains(id) {
+            if elsewhere.contains(id) {
+                dormant[id] = ledge
+            } else if !parked.contains(id) {
                 shed(ledge, share: 1, velocity: ledge.trackVelocity + ledge.offsetVelocity)
             } else if clock - spaceChangedAt < 0.6 {
                 dormant[id] = ledge

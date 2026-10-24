@@ -90,7 +90,7 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         ambient = sceneLight(now)
         if let update = windowSurfaces(now) {
-            simulation.updateWindows(update.surfaces, interval: update.interval, parked: update.parked)
+            simulation.updateWindows(update.surfaces, interval: update.interval, parked: update.parked, elsewhere: update.elsewhere)
         }
         let changed = simulation.step(dt: dt, cursor: cursorLocation())
         let fastest = budget == .full ? interactiveFrameRate : min(60, interactiveFrameRate)

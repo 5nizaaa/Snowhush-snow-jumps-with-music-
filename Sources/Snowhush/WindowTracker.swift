@@ -4,8 +4,11 @@ struct WindowUpdate {
     let surfaces: [WindowSurface]
     /// Seconds since the previous poll.
     let interval: Float
-    /// Windows that left the list but still exist off screen (minimized, hidden, or on another Space), as opposed to closed.
+    /// Windows that left the list but still exist off screen, where it can't be told whether they were hidden
+    /// or left behind on another Space.
     let parked: Set<CGWindowID>
+    /// Windows left behind on another Space: their snow waits for them.
+    let elsewhere: Set<CGWindowID>
 }
 
 struct WindowSurface: Equatable {
@@ -36,13 +39,14 @@ final class WindowTracker {
     private var lastChange: CFTimeInterval = -10
     /// When an auto-hidden Dock came out; nil while it is away.
     private var dockShownAt: CFTimeInterval?
+    private var alphas: [CGWindowID: Double] = [:]
 
     /// Returns the windows when they changed since the last poll.
     /// `eager` polls every frame, e.g. while a mouse button is down and a drag may be starting.
     func poll(now: CFTimeInterval, eager: Bool) -> WindowUpdate? {
         let interval = now - lastQuery
         // Even while windows move, 60 looks a second are plenty: the snow follows a smoothed path of the window anyway.
-        let closely = eager || now - lastChange < 0.6 || dockShownAt != nil || pointerAtBottomEdge
+        let closely = eager || now - lastChange < 0.6 || dockShownAt != nil || pointerAtBottomEdge || Self.windowsMayChange
         guard interval >= (closely ? 1.0 / 62 : 0.2) else { return nil }
         lastQuery = now
         let surfaces = query(now: now)
@@ -50,7 +54,15 @@ final class WindowTracker {
         let vanished = Set(previous.map(\.id)).subtracting(surfaces.map(\.id))
         previous = surfaces
         lastChange = now
-        return WindowUpdate(surfaces: surfaces, interval: Float(min(interval, 0.25)), parked: offscreen(among: vanished))
+        let away = offscreen(among: vanished)
+        return WindowUpdate(surfaces: surfaces, interval: Float(min(interval, 0.25)), parked: away.parked, elsewhere: away.elsewhere)
+    }
+
+    /// A click just ended or a modifier key changed: a window may be closing (its close button, ⌘W),
+    /// minimizing or hiding, and its snow should fall the moment it does.
+    private static var windowsMayChange: Bool {
+        CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .leftMouseUp) < 0.5
+            || CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .flagsChanged) < 0.5
     }
 
     /// Polls every frame for a moment, for changes the mouse doesn't announce (app switching, Spaces).
@@ -62,16 +74,29 @@ final class WindowTracker {
         previous = []
     }
 
-    private func offscreen(among ids: Set<CGWindowID>) -> Set<CGWindowID> {
-        guard !ids.isEmpty else { return [] }
+    /// Sorts windows that left the list: closed ones and ones hidden on the current Space are in neither set.
+    private func offscreen(among ids: Set<CGWindowID>) -> (parked: Set<CGWindowID>, elsewhere: Set<CGWindowID>) {
+        guard !ids.isEmpty else { return ([], []) }
         // CGWindowListCreateDescriptionFromArray takes window numbers stored as raw pointer values.
         var pointers: [UnsafeRawPointer?] = ids.filter { $0 != 0 }.map { UnsafeRawPointer(bitPattern: UInt($0)) }
         guard let array = CFArrayCreate(nil, &pointers, pointers.count, nil),
               let info = CGWindowListCreateDescriptionFromArray(array) as? [[String: Any]]
-        else { return [] }
-        return Set(info.compactMap { entry in
+        else { return ([], []) }
+        let away = info.compactMap { entry in
             entry[kCGWindowIsOnscreen as String] as? Bool == true ? nil : entry[kCGWindowNumber as String] as? CGWindowID
-        })
+        }
+        var parked = Set<CGWindowID>()
+        var elsewhere = Set<CGWindowID>()
+        let current = Spaces.current()
+        for id in away {
+            // A Space switch makes the new Space current before the old one's windows leave the screen.
+            guard let current, let spaces = Spaces.of(id) else {
+                parked.insert(id)
+                continue
+            }
+            if spaces.isDisjoint(with: current) { elsewhere.insert(id) }
+        }
+        return (parked, elsewhere)
     }
 
     /// Where the pointer reveals an auto-hidden Dock.
@@ -127,15 +152,21 @@ final class WindowTracker {
         var blockers: [CGRect] = []
         var surfaces: [WindowSurface] = []
         var dockOut = false
+        var fresh: [CGWindowID: Double] = [:]
+        defer { alphas = fresh }
 
         for entry in list {
             guard let pid = entry[kCGWindowOwnerPID as String] as? Int32, pid != ownPID,
                   let layer = entry[kCGWindowLayer as String] as? Int, layer >= 0, layer < maxLayer,
                   let boundsInfo = entry[kCGWindowBounds as String] as? NSDictionary,
                   var bounds = CGRect(dictionaryRepresentation: boundsInfo),
-                  (entry[kCGWindowAlpha as String] as? Double ?? 1) > 0.3,
+                  let alpha = entry[kCGWindowAlpha as String] as? Double, alpha > 0.3,
                   !ignoredOwners.contains(entry[kCGWindowOwnerName as String] as? String ?? "")
             else { continue }
+            let id = entry[kCGWindowNumber as String] as? CGWindowID ?? 0
+            fresh[id] = alpha
+            // A window fading out is closing or hiding: its snow falls as the fade begins.
+            let fading = alpha < 0.98 && alpha < (alphas[id] ?? 0) - 0.01
 
             let owner = entry[kCGWindowOwnerName as String] as? String ?? ""
             let shelf = owner == "Dock" && layer == dockLevel
@@ -155,8 +186,7 @@ final class WindowTracker {
             let fillsScreen = bounds.width * bounds.height >= visibleArea * 0.9
 
             let coverOnly = coverOnlyOwners.contains(owner) && !shelf
-            if roomAbove && onScreen && !fillsScreen && !coverOnly && bounds.width >= 80 && bounds.height >= 40,
-               let id = entry[kCGWindowNumber as String] as? CGWindowID {
+            if roomAbove && onScreen && !fillsScreen && !coverOnly && !fading && bounds.width >= 80 && bounds.height >= 40, id != 0 {
                 // Search bars like Spotlight are capsules: low and wide, with fully rounded ends.
                 let capsule = !shelf && (owner.lowercased().contains("spotlight") || (bounds.height <= 90 && bounds.width >= bounds.height * 3))
                 let corner = shelf ? Dock.cornerRadius(height: bounds.height) : capsule ? min(bounds.height / 2, 32) : 18
@@ -184,6 +214,37 @@ private enum SkyLight {
 
     static func function<T>(_ name: String, as type: T.Type) -> T? {
         dlsym(handle, name).map { unsafeBitCast($0, to: type) }
+    }
+}
+
+/// Which Spaces windows are on, through private SkyLight calls; when they're unavailable, nothing can be told.
+private enum Spaces {
+    private typealias SpacesForWindows = @convention(c) (Int32, Int32, CFArray) -> Unmanaged<CFArray>?
+    private typealias DisplaySpaces = @convention(c) (Int32) -> Unmanaged<CFArray>?
+
+    private static let spacesForWindows = SkyLight.function("SLSCopySpacesForWindows", as: SpacesForWindows.self)
+    private static let displaySpaces = SkyLight.function("SLSCopyManagedDisplaySpaces", as: DisplaySpaces.self)
+
+    /// The Space showing on each display.
+    static func current() -> Set<UInt64>? {
+        guard let connection = SkyLight.connection,
+              let displays = displaySpaces?(connection)?.takeRetainedValue() as? [[String: Any]]
+        else { return nil }
+        let spaces = displays.compactMap { ($0["Current Space"] as? [String: Any]).flatMap(id) }
+        return spaces.isEmpty ? nil : Set(spaces)
+    }
+
+    static func of(_ window: CGWindowID) -> Set<UInt64>? {
+        // 7 asks for the window's Spaces of every kind.
+        guard let connection = SkyLight.connection,
+              let spaces = spacesForWindows?(connection, 7, [NSNumber(value: window)] as CFArray)?.takeRetainedValue() as? [NSNumber],
+              !spaces.isEmpty
+        else { return nil }
+        return Set(spaces.map(\.uint64Value))
+    }
+
+    private static func id(_ space: [String: Any]) -> UInt64? {
+        (space["ManagedSpaceID"] as? NSNumber)?.uint64Value ?? (space["id64"] as? NSNumber)?.uint64Value
     }
 }
 
