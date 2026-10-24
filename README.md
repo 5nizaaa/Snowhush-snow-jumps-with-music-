@@ -2,7 +2,7 @@
 
 A tiny macOS menu bar app that lets soft snow fall over your desktop. It settles along the bottom of the screen and on the tops of your windows, slides off when you drag them and parts under your cursor.
 
-[Download for macOS](https://github.com/mbezruchko/Snowhush/releases/latest/download/Snowhush.dmg) · macOS 14 or later
+[Download for macOS](https://github.com/mbezruchko/Snowhush/releases/latest/download/Snowhush.dmg) · macOS 14 or later · [snowhush.pages.dev](https://snowhush.pages.dev)
 
 ## Building
 
@@ -27,4 +27,4 @@ One-time setup on the release machine:
 
 ## Site
 
-`site/` is a static page served by Cloudflare Pages: no build command, output directory `site`.
+`site/` is a static page served by Cloudflare Pages at [snowhush.pages.dev](https://snowhush.pages.dev): no build command, output directory `site`. Every push to `main` deploys it.
