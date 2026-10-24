@@ -9,6 +9,8 @@ struct WindowUpdate {
     let parked: Set<CGWindowID>
     /// Windows left behind on another Space: their snow waits for them.
     let elsewhere: Set<CGWindowID>
+    /// The whole Space is sliding past, as on a switch between Spaces: windows move without being moved.
+    let sliding: Bool
 }
 
 struct WindowSurface: Equatable {
@@ -40,6 +42,7 @@ final class WindowTracker {
     /// When an auto-hidden Dock came out; nil while it is away.
     private var dockShownAt: CFTimeInterval?
     private var alphas: [CGWindowID: Double] = [:]
+    private var slidingUntil: CFTimeInterval = -10
 
     /// Returns the windows when they changed since the last poll.
     /// `eager` polls every frame, e.g. while a mouse button is down and a drag may be starting.
@@ -51,11 +54,30 @@ final class WindowTracker {
         lastQuery = now
         let surfaces = query(now: now)
         guard surfaces != previous else { return nil }
+        if slides(from: previous, to: surfaces) { slidingUntil = now + 0.3 }
+        let sliding = now < slidingUntil
         let vanished = Set(previous.map(\.id)).subtracting(surfaces.map(\.id))
         previous = surfaces
         lastChange = now
         let away = offscreen(among: vanished)
-        return WindowUpdate(surfaces: surfaces, interval: Float(min(interval, 0.25)), parked: away.parked, elsewhere: away.elsewhere)
+        // Windows carried off the screen by a sliding Space are still listed, but their snow should wait for them too.
+        let elsewhere = sliding ? away.elsewhere.union(vanished.subtracting(away.parked)) : away.elsewhere
+        return WindowUpdate(surfaces: surfaces, interval: Float(min(interval, 0.25)), parked: away.parked, elsewhere: elsewhere, sliding: sliding)
+    }
+
+    /// Whether every window that moved slid sideways by the same amount, unchanged otherwise, with no button held:
+    /// nobody drags several windows at once, but a Space switch carries them all.
+    private func slides(from old: [WindowSurface], to new: [WindowSurface]) -> Bool {
+        guard NSEvent.pressedMouseButtons == 0 else { return false }
+        let before = Dictionary(old.map { ($0.id, $0.frame) }, uniquingKeysWith: { first, _ in first })
+        var shift: CGFloat?
+        for surface in new {
+            guard let frame = before[surface.id], frame != surface.frame else { continue }
+            let dx = surface.frame.minX - frame.minX
+            guard surface.frame.size == frame.size, abs(surface.frame.minY - frame.minY) < 0.5, abs(dx - (shift ?? dx)) < 1 else { return false }
+            shift = dx
+        }
+        return shift != nil
     }
 
     /// A click just ended or a modifier key changed: a window may be closing (its close button, ⌘W),

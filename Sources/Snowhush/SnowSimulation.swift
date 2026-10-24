@@ -307,7 +307,7 @@ final class SnowSimulation {
         parking.removeAll()
     }
 
-    func updateWindows(_ surfaces: [WindowSurface], interval: Float, parked: Set<CGWindowID> = [], elsewhere: Set<CGWindowID> = []) {
+    func updateWindows(_ surfaces: [WindowSurface], interval: Float, parked: Set<CGWindowID> = [], elsewhere: Set<CGWindowID> = [], sliding: Bool = false) {
         var seen = Set<CGWindowID>()
         for surface in surfaces {
             let left = Float(surface.frame.minX) + ledgeInset
@@ -319,7 +319,11 @@ final class SnowSimulation {
             let ledge: SnowLayer
             if let existing = ledges[surface.id] {
                 ledge = existing
-                move(ledge, left: left, top: top, columns: columns, interval: interval)
+                if sliding && columns == ledge.count {
+                    pan(ledge, left: left, top: top)
+                } else {
+                    move(ledge, left: left, top: top, columns: columns, interval: interval)
+                }
             } else if let returning = dormant.removeValue(forKey: surface.id) ?? unpark(surface.id) {
                 ledge = returning
                 restore(returning, left: left, top: top, columns: columns)
@@ -380,6 +384,19 @@ final class SnowSimulation {
         while let first = parking.first, clock - first.since > 0.25 {
             parking.removeFirst()
             shed(first.ledge, share: 1, velocity: .zero)
+        }
+    }
+
+    /// Carries snow along with a window that the whole Space is sliding past: nothing pushes the snow, so it doesn't react.
+    private func pan(_ ledge: SnowLayer, left: Float, top: Float) {
+        let shift = SIMD2(left, top) - ledge.origin
+        guard shift != .zero else { return }
+        ledge.origin += shift
+        ledge.track += shift
+        ledge.previousBaseY = ledge.base.y
+        if ledge.top > 0.05 {
+            lastWindowMotion = clock
+            windowsChanged = true
         }
     }
 
