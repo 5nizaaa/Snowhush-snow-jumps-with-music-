@@ -26,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, SPUSta
     private var sessionInactive = false
     private var updater: SPUStandardUpdaterController!
     private var welcome: WelcomeController?
+    private let power = PowerMonitor()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if AppMover.moveIfNeeded() {
@@ -77,6 +78,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, SPUSta
             } else if let snow = ScreenSnow(screen: screen, device: device, snowOnWindows: { [unowned self] in snowOnWindows }) {
                 snow.simulation.snowfallHeld = snowfallHeld
                 snow.simulation.snowfallReleased = { [weak self] in self?.releaseSnowfall() }
+                snow.apply(power.budget)
                 screens.append(snow)
             }
         }
@@ -224,6 +226,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, SPUSta
     // MARK: - System
 
     private func observeSystem() {
+        power.changed = { [unowned self] in screens.forEach { $0.apply(power.budget) } }
         let workspace = NSWorkspace.shared.notificationCenter
         let distributed = DistributedNotificationCenter.default()
 

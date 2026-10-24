@@ -69,6 +69,11 @@ final class ScreenSnow {
         min(max(screen.maximumFramesPerSecond, 60), 120)
     }
 
+    func apply(_ budget: PowerBudget) {
+        renderer.budget = budget
+        simulation.density = budget == .saver ? 0.75 : 1
+    }
+
     func setActive(_ active: Bool) {
         guard view.isPaused == active else { return }
         view.isPaused = !active

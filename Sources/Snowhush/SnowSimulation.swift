@@ -99,6 +99,10 @@ final class SnowSimulation {
             updateTarget()
         }
     }
+    /// Scales the snowfall; flakes come and go through the usual cycle, so a change shows gradually.
+    var density: Float = 1 {
+        didSet { updateTarget() }
+    }
     var thaws = false
     var accumulates = true
     /// Keeps the snowfall from starting until a scattered window's snow first reaches the bottom of the screen.
@@ -879,7 +883,7 @@ final class SnowSimulation {
     }
 
     private func updateTarget() {
-        targetFlakes = snowfallHeld ? 0 : Int(snowfall.flakesPerMegapoint * strength * width * height / 1_000_000)
+        targetFlakes = snowfallHeld ? 0 : Int(snowfall.flakesPerMegapoint * strength * density * width * height / 1_000_000)
     }
 
     private static func columnCount(for width: Float, columnWidth: Float) -> Int {

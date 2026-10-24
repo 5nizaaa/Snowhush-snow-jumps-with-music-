@@ -25,6 +25,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     var windowSurfaces: (CFTimeInterval) -> WindowUpdate? = { _ in nil }
     /// Frames per second while the snow is being disturbed: the display's highest rate, up to 120 on ProMotion screens.
     var interactiveFrameRate = 60
+    var budget = PowerBudget.full
     var sceneLight: (CFTimeInterval) -> (light: SIMD3<Float>, shadowTint: SIMD4<Float>) = { _ in (SIMD3(repeating: 1), .zero) }
     private var ambient: (light: SIMD3<Float>, shadowTint: SIMD4<Float>) = (SIMD3(repeating: 1), .zero)
 
@@ -92,10 +93,13 @@ final class Renderer: NSObject, MTKViewDelegate {
             simulation.updateWindows(update.surfaces, interval: update.interval, parked: update.parked)
         }
         let changed = simulation.step(dt: dt, cursor: cursorLocation())
+        let fastest = budget == .full ? interactiveFrameRate : min(60, interactiveFrameRate)
+        // 24 only where it divides the display's rate evenly; elsewhere it would judder.
+        let calm = budget == .saver && interactiveFrameRate % 24 == 0 ? 24 : 30
         let frameRate = switch simulation.pace {
-        case .calm: 30
-        case .lively: min(60, interactiveFrameRate)
-        case .interactive: interactiveFrameRate
+        case .calm: calm
+        case .lively: min(60, fastest)
+        case .interactive: fastest
         }
         if view.preferredFramesPerSecond != frameRate { view.preferredFramesPerSecond = frameRate }
         idleFrames = changed ? 0 : idleFrames + 1
