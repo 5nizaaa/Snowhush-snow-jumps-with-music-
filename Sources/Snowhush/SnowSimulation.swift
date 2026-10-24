@@ -148,7 +148,7 @@ final class SnowSimulation {
     private var heightsChanged = false
     private var windowsChanged = false
     private var lastWindowMotion: Double = -10
-    private var lastCursorMotion: Double = -10
+    private var lastCursorPush: Double = -10
     /// Snow on windows that left the screen for another Space, kept until the window shows up again.
     private var dormant: [CGWindowID: SnowLayer] = [:]
     /// Windows that went off screen without a word yet on why; a Space switch keeps their snow, anything else drops it.
@@ -209,10 +209,13 @@ final class SnowSimulation {
             layer.refreshTop()
             layer.previousBaseY = layer.base.y
         }
-        // A cursor merely resting near snow changes nothing on screen; only one moving through it does.
-        if clock - lastWindowMotion < 0.6 || (clock - lastCursorMotion < 0.3 && cursorNearSnow()) {
+        // Only a cursor that actually displaces snow needs the full rate; one passing near it or resting in it changes nothing.
+        let pushed = clock - lastWindowMotion < 0.6 || clock - lastCursorPush < 0.3
+        // The steady trickle off window corners is a few tiny grains at a time; they read fine at the calm rate.
+        let flying = grains.count > 24 || clock < scatteredUntil
+        if pushed {
             pace = .interactive
-        } else if !grains.isEmpty || clock < scatteredUntil {
+        } else if flying {
             pace = .lively
         } else {
             pace = .calm
@@ -551,7 +554,6 @@ final class SnowSimulation {
         cursor = center
 
         let delta = center - previous
-        if simd_length(delta) > 0.5 { lastCursorMotion = clock }
         var velocity = delta / max(dt, 1.0 / 240)
         let speed = simd_length(velocity)
         if speed > 3000 { velocity *= 3000 / speed }
@@ -616,6 +618,7 @@ final class SnowSimulation {
             let removed = buried ? (top - bottom) * min(1, travel / (2 * radius)) : h - bottom
             guard removed > 0.001 else { continue }
             layer.set(i, h - removed)
+            lastCursorPush = clock
             heightsChanged = true
 
             let area = removed * columnWidth
@@ -652,18 +655,6 @@ final class SnowSimulation {
             ))
         }
         return area
-    }
-
-    private func cursorNearSnow() -> Bool {
-        guard let cursor else { return false }
-        if cursor.y - cursorRadius <= ground.top + 30 { return true }
-        return ledgeList.contains { ledge in
-            ledge.top > 0.05
-                && cursor.y - cursorRadius <= ledge.base.y + ledge.top + 30
-                && cursor.y + cursorRadius >= ledge.base.y - 10
-                && cursor.x + cursorRadius >= ledge.base.x - 30
-                && cursor.x - cursorRadius <= ledge.base.x + ledge.width + 30
-        }
     }
 
     // MARK: - Particles
