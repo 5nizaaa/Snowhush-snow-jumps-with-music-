@@ -92,7 +92,11 @@ final class Renderer: NSObject, MTKViewDelegate {
             simulation.updateWindows(update.surfaces, interval: update.interval, parked: update.parked)
         }
         let changed = simulation.step(dt: dt, cursor: cursorLocation())
-        let frameRate = simulation.isInteracting ? interactiveFrameRate : 30
+        let frameRate = switch simulation.pace {
+        case .calm: 30
+        case .lively: min(60, interactiveFrameRate)
+        case .interactive: interactiveFrameRate
+        }
         if view.preferredFramesPerSecond != frameRate { view.preferredFramesPerSecond = frameRate }
         idleFrames = changed ? 0 : idleFrames + 1
         // A still pile only needs a slow refresh for its glints.

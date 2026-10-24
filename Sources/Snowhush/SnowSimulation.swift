@@ -77,7 +77,17 @@ final class SnowSimulation {
     let columnWidth: Float = 2
     private(set) var width: Float
     private(set) var height: Float
-    private(set) var isInteracting = false
+    /// How briskly the scene changes, which sets how often it is drawn.
+    enum Pace {
+        /// Only snowfall and slow drifts: a low frame rate is indistinguishable.
+        case calm
+        /// Loose snow in flight.
+        case lively
+        /// The cursor or a window is pushing snow around: drawn as often as the display allows.
+        case interactive
+    }
+
+    private(set) var pace = Pace.calm
 
     var snowfall: Snowfall {
         didSet {
@@ -138,6 +148,7 @@ final class SnowSimulation {
     private var heightsChanged = false
     private var windowsChanged = false
     private var lastWindowMotion: Double = -10
+    private var lastCursorMotion: Double = -10
     /// Snow on windows that left the screen for another Space, kept until the window shows up again.
     private var dormant: [CGWindowID: SnowLayer] = [:]
     /// Windows that went off screen without a word yet on why; a Space switch keeps their snow, anything else drops it.
@@ -198,7 +209,14 @@ final class SnowSimulation {
             layer.refreshTop()
             layer.previousBaseY = layer.base.y
         }
-        isInteracting = !grains.isEmpty || clock - lastWindowMotion < 0.6 || clock < scatteredUntil || cursorNearSnow()
+        // A cursor merely resting near snow changes nothing on screen; only one moving through it does.
+        if clock - lastWindowMotion < 0.6 || (clock - lastCursorMotion < 0.3 && cursorNearSnow()) {
+            pace = .interactive
+        } else if !grains.isEmpty || clock < scatteredUntil {
+            pace = .lively
+        } else {
+            pace = .calm
+        }
         let changed = wasMoving || !flakes.isEmpty || !grains.isEmpty || heightsChanged || windowsChanged
         windowsChanged = false
         return changed
@@ -533,6 +551,7 @@ final class SnowSimulation {
         cursor = center
 
         let delta = center - previous
+        if simd_length(delta) > 0.5 { lastCursorMotion = clock }
         var velocity = delta / max(dt, 1.0 / 240)
         let speed = simd_length(velocity)
         if speed > 3000 { velocity *= 3000 / speed }
