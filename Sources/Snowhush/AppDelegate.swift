@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, SPUSta
     private var simulation: SnowSimulation!
     private var renderer: Renderer!
     private let tracker = WindowTracker()
+    private let sceneLight = SceneLight()
     private var snowOnWindows = true
     private var statusItem: NSStatusItem!
     private var snowfallItems: [NSMenuItem] = []
@@ -61,6 +62,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, SPUSta
         }
         renderer.windowSurfaces = { [unowned self] now in
             snowOnWindows && !window.behindWindows ? tracker.poll(now: now, eager: NSEvent.pressedMouseButtons != 0) : nil
+        }
+        renderer.sceneLight = { [unowned self] now in
+            sceneLight.update(screen: window.screen, now: now)
+            return (sceneLight.light, sceneLight.shadowTint)
         }
         measure(screen)
         view.delegate = renderer
@@ -226,6 +231,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, SPUSta
         observe(.default, NSApplication.didChangeScreenParametersNotification) { $0.fitToScreen() }
         observe(workspace, NSWorkspace.activeSpaceDidChangeNotification) {
             $0.simulation.spaceChanged()
+            $0.sceneLight.invalidate()
             $0.tracker.watchClosely(now: CACurrentMediaTime())
         }
         observe(workspace, NSWorkspace.didActivateApplicationNotification) { $0.tracker.watchClosely(now: CACurrentMediaTime()) }

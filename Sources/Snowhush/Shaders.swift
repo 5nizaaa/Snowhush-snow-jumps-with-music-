@@ -13,6 +13,8 @@ struct Uniforms {
     float2 origin;
     float pileBottom;
     float padding;
+    float4 light;
+    float4 shadowTint;
 };
 
 struct Sprite {
@@ -33,6 +35,7 @@ struct SpriteOut {
     float alpha;
     float soft;
     float4 tint;
+    float3 light;
 };
 
 vertex SpriteOut spriteVertex(uint vid [[vertex_id]],
@@ -46,6 +49,7 @@ vertex SpriteOut spriteVertex(uint vid [[vertex_id]],
     out.alpha = s.alpha * min(pixels / 2.0, 1.0);
     out.soft = s.soft;
     out.tint = float4(s.tintRed, s.tintGreen, s.tintBlue, s.tintAmount);
+    out.light = u.light.rgb;
     return out;
 }
 
@@ -56,7 +60,7 @@ fragment float4 spriteFragment(SpriteOut in [[stage_in]], float2 coord [[point_c
     float3 core = float3(0.965, 0.975, 0.995);
     float3 rim = float3(0.62, 0.67, 0.77);
     float3 color = mix(core, rim, smoothstep(0.35, 1.0, r) * 0.65);
-    color = mix(color, in.tint.rgb, in.tint.a);
+    color = mix(color, in.tint.rgb, in.tint.a) * in.light;
     return float4(color * a, a);
 }
 
@@ -110,8 +114,8 @@ fragment float4 pileFragment(PileOut in [[stage_in]],
     float slope = (heightAt(heights, u, x + 2.0) - heightAt(heights, u, x - 2.0)) * 0.25;
     float light = dot(normalize(float2(-slope, 1.0)), normalize(float2(-0.5, 1.0)));
 
-    float3 surface = float3(0.925, 0.94, 0.965);
-    float3 shadow = float3(0.72, 0.78, 0.88);
+    float3 shadow = mix(float3(0.72, 0.78, 0.88), u.shadowTint.rgb, u.shadowTint.a);
+    float3 surface = mix(float3(0.925, 0.94, 0.965), min(u.shadowTint.rgb * 1.18, float3(1.0)), u.shadowTint.a * 0.2);
     float shade = (1.0 - exp(-depth / 30.0)) * 0.32 + (1.0 - light) * 0.6 * exp(-depth / 5.0);
     float3 color = mix(surface, shadow, saturate(shade));
     color = mix(color, float3(0.975, 0.982, 0.995), exp(-depth * 0.9) * 0.6);
@@ -123,6 +127,7 @@ fragment float4 pileFragment(PileOut in [[stage_in]],
         color = mix(color, float3(1.0), twinkle * exp(-depth / 7.0));
     }
 
+    color *= u.light.rgb;
     return float4(color * coverage, coverage);
 }
 """

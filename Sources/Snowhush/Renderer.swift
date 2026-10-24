@@ -12,6 +12,8 @@ struct Uniforms {
     var origin: SIMD2<Float> = .zero
     var pileBottom: Float = 0
     var padding: Float = 0
+    var light = SIMD4<Float>(1, 1, 1, 1)
+    var shadowTint = SIMD4<Float>(0, 0, 0, 0)
 }
 
 enum RendererError: Error {
@@ -21,6 +23,8 @@ enum RendererError: Error {
 final class Renderer: NSObject, MTKViewDelegate {
     var cursorLocation: () -> SIMD2<Float> = { SIMD2(-10_000, -10_000) }
     var windowSurfaces: (CFTimeInterval) -> WindowUpdate? = { _ in nil }
+    var sceneLight: (CFTimeInterval) -> (light: SIMD3<Float>, shadowTint: SIMD4<Float>) = { _ in (SIMD3(repeating: 1), .zero) }
+    private var ambient: (light: SIMD3<Float>, shadowTint: SIMD4<Float>) = (SIMD3(repeating: 1), .zero)
 
     private let simulation: SnowSimulation
     private let device: MTLDevice
@@ -81,6 +85,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         let dt = lastTime > 0 ? Float(min(now - lastTime, 0.05)) : 1.0 / 60
         lastTime = now
 
+        ambient = sceneLight(now)
         if let update = windowSurfaces(now) {
             simulation.updateWindows(update.surfaces, interval: update.interval, parked: update.parked)
         }
@@ -127,7 +132,9 @@ final class Renderer: NSObject, MTKViewDelegate {
             viewSize: SIMD2(simulation.width, simulation.height),
             scale: scale,
             time: time,
-            columnWidth: simulation.columnWidth
+            columnWidth: simulation.columnWidth,
+            light: SIMD4(ambient.light, 1),
+            shadowTint: ambient.shadowTint
         )
         let uniformsLength = MemoryLayout<Uniforms>.stride
 
