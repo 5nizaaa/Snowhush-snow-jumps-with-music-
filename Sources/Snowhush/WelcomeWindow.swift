@@ -3,9 +3,8 @@ import QuartzCore
 
 /// Shown on first launch. Getting started crumbles the window into snow that falls onto the desktop.
 final class WelcomeController: NSObject {
-    /// Receives the pieces of the window as it crumbles, in the overlay's coordinates.
+    /// Receives the pieces of the window as it crumbles, in global screen coordinates.
     var scatter: ([ScatterPiece]) -> Void = { _ in }
-    var overlayOrigin: () -> CGPoint = { .zero }
     var finished: () -> Void = {}
     /// Called instead of `scatter` when the window can't be captured and just closes.
     var skipped: () -> Void = {}
@@ -50,14 +49,13 @@ final class WelcomeController: NSObject {
             return
         }
         self.crumble = crumble
-        let origin = overlayOrigin()
         let windowOrigin = window.frame.origin
         crumble.start { [weak self] cells in
             guard let self else { return }
             let center = CGPoint(x: view.bounds.midX, y: view.bounds.midY)
             self.scatter(cells.map { cell in
-                let x = Float(windowOrigin.x + cell.point.x - origin.x)
-                let y = Float(windowOrigin.y + cell.point.y - origin.y)
+                let x = Float(windowOrigin.x + cell.point.x)
+                let y = Float(windowOrigin.y + cell.point.y)
                 let outward = Float((cell.point.x - center.x) / view.bounds.width)
                 return ScatterPiece(
                     position: SIMD2(x, y),

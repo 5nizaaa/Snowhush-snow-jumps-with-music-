@@ -21,6 +21,7 @@ struct WindowSurface: Equatable {
 
 /// Polls the on-screen window list: a few times a second when nothing moves, every frame while something does.
 final class WindowTracker {
+    /// The display tracked, in the window list's global coordinates: origin at the top left of the primary display.
     var screen: CGRect = .zero
     var menuBarHeight: CGFloat = 0
 
@@ -39,7 +40,7 @@ final class WindowTracker {
         let interval = now - lastQuery
         guard interval >= (eager || now - lastChange < 0.6 ? 0 : 0.2) else { return nil }
         lastQuery = now
-        let surfaces = query()
+        let surfaces = query(now: now)
         guard surfaces != previous else { return nil }
         let vanished = Set(previous.map(\.id)).subtracting(surfaces.map(\.id))
         previous = surfaces
@@ -68,10 +69,19 @@ final class WindowTracker {
         })
     }
 
-    private func query() -> [WindowSurface] {
-        guard screen.width > 0,
-              let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]
-        else { return [] }
+    private static var shared: (time: CFTimeInterval, list: [[String: Any]])?
+
+    /// One window list serves every display's tracker that polls within the same frame.
+    private static func windowList(now: CFTimeInterval) -> [[String: Any]] {
+        if let shared, abs(now - shared.time) < 0.008 { return shared.list }
+        let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        shared = (now, list)
+        return list
+    }
+
+    private func query(now: CFTimeInterval) -> [WindowSurface] {
+        guard screen.width > 0 else { return [] }
+        let list = Self.windowList(now: now)
 
         let visibleArea = screen.width * (screen.height - menuBarHeight)
         var blockers: [CGRect] = []
@@ -86,11 +96,12 @@ final class WindowTracker {
                   !ignoredOwners.contains(entry[kCGWindowOwnerName as String] as? String ?? "")
             else { continue }
 
+            guard bounds.intersects(screen) else { continue }
             // Screen-sized windows above the normal layer (Notification Center, Siri) are transparent overlays.
             if layer > 0 && bounds.width * bounds.height >= screen.width * screen.height * 0.9 { continue }
 
-            let frame = CGRect(x: bounds.minX, y: screen.height - bounds.maxY, width: bounds.width, height: bounds.height)
-            let roomAbove = bounds.minY >= menuBarHeight + 6 && frame.maxY < screen.height
+            let frame = CGRect(x: bounds.minX - screen.minX, y: screen.maxY - bounds.maxY, width: bounds.width, height: bounds.height)
+            let roomAbove = bounds.minY - screen.minY >= menuBarHeight + 6 && frame.maxY < screen.height
             let onScreen = frame.maxX > 0 && frame.minX < screen.width && frame.maxY > 0
             let fillsScreen = bounds.width * bounds.height >= visibleArea * 0.9
 

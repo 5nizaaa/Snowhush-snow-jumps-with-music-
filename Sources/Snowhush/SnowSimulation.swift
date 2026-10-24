@@ -93,6 +93,8 @@ final class SnowSimulation {
     var snowfallHeld = false {
         didSet { updateTarget() }
     }
+    /// Called when the held snowfall starts by itself, so the other displays can start theirs.
+    var snowfallReleased: () -> Void = {}
 
     private let groundDepth: Float = 40
     private let ledgeDepth: Float = 14
@@ -705,7 +707,10 @@ final class SnowSimulation {
 
             if flake.settles && accumulates {
                 if let hit = landing(x: flake.position.x, from: previousY, to: flake.position.y) {
-                    if snowfallHeld && flake.mass < 1 && hit.layer === ground { snowfallHeld = false }
+                    if snowfallHeld && flake.mass < 1 && hit.layer === ground {
+                        snowfallHeld = false
+                        snowfallReleased()
+                    }
                     hit.layer.deposit(flake.size * flake.size * deposition * flake.mass * hit.layer.fill(hit.index), at: flake.position.x, wide: true)
                     heightsChanged = true
                     recycle(i)
@@ -821,7 +826,10 @@ final class SnowSimulation {
     /// Wanders between light lulls, steady snow and heavy flurries.
     private func vary(dt: Float) {
         // In case none of the scattered snow makes it to the bottom, say because it all came to rest on windows.
-        if snowfallHeld && scatteredUntil > 0 && clock > scatteredUntil { snowfallHeld = false }
+        if snowfallHeld && scatteredUntil > 0 && clock > scatteredUntil {
+            snowfallHeld = false
+            snowfallReleased()
+        }
         if snowfall != .variable {
             strengthTarget = 1
         } else if clock >= nextShift {
