@@ -367,16 +367,15 @@ impl Screen {
     }
 
     /// Topmost windows opened later stack above; this puts the snow back on top of them.
-    /// Behind windows, the snow is kept just under the desktop icons instead.
+    /// Behind windows, the snow is kept just under the desktop icons instead, and above live wallpapers
+    /// like Lively's, which go into the same layer and land on top when they start later.
     pub fn raise(&self) {
         let above = match self.layer {
-            Some(layer) => layer.icons,
-            None => Some(HWND_TOPMOST),
+            Some(layer) => layer.icons.unwrap_or(HWND_TOP),
+            None => HWND_TOPMOST,
         };
-        if let Some(above) = above {
-            unsafe {
-                let _ = SetWindowPos(self.overlay.0, Some(above), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
-            }
+        unsafe {
+            let _ = SetWindowPos(self.overlay.0, Some(above), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
         }
     }
 
