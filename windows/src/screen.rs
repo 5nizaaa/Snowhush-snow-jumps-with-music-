@@ -455,7 +455,7 @@ fn create_behind(rect: &RECT, layer: &DesktopLayer) -> Result<HWND> {
         let mut origin = POINT { x: rect.left, y: rect.top };
         let _ = ScreenToClient(layer.parent, &mut origin);
         let window = CreateWindowExW(
-            WS_EX_NOREDIRECTIONBITMAP | WS_EX_NOACTIVATE,
+            WS_EX_NOREDIRECTIONBITMAP | WS_EX_LAYERED | WS_EX_NOACTIVATE,
             CLASS,
             w!("Snowhush"),
             WS_CHILD | WS_VISIBLE | WS_DISABLED,
@@ -468,6 +468,8 @@ fn create_behind(rect: &RECT, layer: &DesktopLayer) -> Result<HWND> {
             Some(GetModuleHandleW(None)?.into()),
             None,
         )?;
+        // Unlayered, a child counts as opaque, and siblings under it stop drawing: Lively's wallpaper among them.
+        SetLayeredWindowAttributes(window, COLORREF(0), 255, LWA_ALPHA)?;
         if let Some(icons) = layer.icons {
             let _ = SetWindowPos(window, Some(icons), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         }
