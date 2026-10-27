@@ -1,6 +1,11 @@
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, FindWindowExW, FindWindowW, SMTO_NORMAL, SendMessageTimeoutW};
+use windows::Win32::UI::WindowsAndMessaging::{
+    EnumWindows, FindWindowExW, FindWindowW, GW_CHILD, GW_HWNDNEXT, GetWindow, GetWindowThreadProcessId, IsWindowVisible, SMTO_NORMAL,
+    SendMessageTimeoutW,
+};
 use windows::core::{BOOL, w};
+
+use crate::tracker::{class_name, process_name};
 
 /// Where an overlay sits behind windows: inside the shell's wallpaper layer, under the desktop icons.
 #[derive(Clone, Copy, Debug)]
@@ -38,4 +43,37 @@ pub fn find() -> Option<DesktopLayer> {
         let _ = EnumWindows(Some(behind_icons), LPARAM(&raw mut found as isize));
         found.map(|parent| DesktopLayer { parent, icons: None })
     }
+}
+
+/// The shell's desktop windows and what lives in them, front to back, for the log.
+pub fn tree() -> String {
+    unsafe {
+        let mut parts = Vec::new();
+        if let Ok(progman) = FindWindowW(w!("Progman"), None) {
+            parts.push(format!("Progman [{}]", children(progman)));
+        }
+        let mut worker = FindWindowExW(None, None, w!("WorkerW"), None);
+        while let Ok(window) = worker {
+            if IsWindowVisible(window).as_bool() {
+                parts.push(format!("WorkerW [{}]", children(window)));
+            }
+            worker = FindWindowExW(None, Some(window), w!("WorkerW"), None);
+        }
+        parts.join(", ")
+    }
+}
+
+fn children(parent: HWND) -> String {
+    let mut names = Vec::new();
+    unsafe {
+        let mut child = GetWindow(parent, GW_CHILD);
+        while let Ok(window) = child {
+            let mut process = 0;
+            GetWindowThreadProcessId(window, Some(&mut process));
+            let hidden = if IsWindowVisible(window).as_bool() { "" } else { " hidden" };
+            names.push(format!("{} of {}{hidden}", class_name(window), process_name(process)));
+            child = GetWindow(window, GW_HWNDNEXT);
+        }
+    }
+    names.join(", ")
 }

@@ -350,13 +350,13 @@ fn corner_radius(window: HWND) -> f32 {
     }
 }
 
-fn class_name(window: HWND) -> String {
+pub fn class_name(window: HWND) -> String {
     let mut buffer = [0u16; 128];
     let length = unsafe { GetClassNameW(window, &mut buffer) }.max(0) as usize;
     String::from_utf16_lossy(&buffer[..length])
 }
 
-fn process_name(process: u32) -> String {
+pub fn process_name(process: u32) -> String {
     unsafe {
         let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process) else { return format!("pid {process}") };
         let mut buffer = [0u16; 512];

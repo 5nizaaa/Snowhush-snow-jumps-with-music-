@@ -87,6 +87,7 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
     let mut chores_at = 0;
     let mut light_at = 0;
     let mut displays_changed_at = None;
+    let mut desktop_logged = String::new();
     let mut stats = Stats::new(started);
     let mut tracker = Tracker::new();
 
@@ -205,6 +206,14 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
                 if found.is_some() || screens.iter().any(|screen| !screen.alive()) {
                     layer = found;
                     screens = sync_screens(&gpu, &settings, screens, layer, true);
+                }
+            }
+            // Wallpaper apps share the layer the snow goes into; how they settle around it tells what went wrong.
+            if settings.behind_windows {
+                let tree = desktop::tree();
+                if tree != desktop_logged {
+                    log!("desktop: {tree}");
+                    desktop_logged = tree;
                 }
             }
             if now >= light_at {
