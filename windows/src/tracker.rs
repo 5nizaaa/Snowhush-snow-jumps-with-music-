@@ -236,10 +236,15 @@ impl Tracker {
             if extended & WS_EX_TRANSPARENT.0 != 0 {
                 return None;
             }
+            // A layered window drawn with per-pixel alpha, or cut out by a colour key, isn't the shape of its rectangle:
+            // desktop widgets like Rainmeter skins are mostly empty space. The attributes can't be read for per-pixel ones.
             if extended & WS_EX_LAYERED.0 != 0 {
                 let mut alpha = 255u8;
                 let mut flags = LAYERED_WINDOW_ATTRIBUTES_FLAGS(0);
-                if GetLayeredWindowAttributes(window, None, Some(&mut alpha), Some(&mut flags)).is_ok() && flags.contains(LWA_ALPHA) && alpha < 77 {
+                if GetLayeredWindowAttributes(window, None, Some(&mut alpha), Some(&mut flags)).is_err()
+                    || flags.contains(LWA_COLORKEY)
+                    || (flags.contains(LWA_ALPHA) && alpha < 77)
+                {
                     return None;
                 }
             }
