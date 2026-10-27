@@ -14,7 +14,7 @@
   <sub>macOS 14 or later · free and open source</sub>
 </p>
 
-https://github.com/user-attachments/assets/d220b1e3-4e87-447f-a934-6ca054defc57
+https://github.com/user-attachments/assets/38811099-59d4-4f54-8871-c12741ba66e8
 
 A tiny menu bar app. Soft snow drifts across your screen, settles along the tops of your windows and slips off when you drag them. Sweep the drift aside with your cursor.
 
