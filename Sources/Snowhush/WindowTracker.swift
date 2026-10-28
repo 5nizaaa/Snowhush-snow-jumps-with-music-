@@ -50,6 +50,8 @@ final class WindowTracker {
     private var pressedMinimize: CGWindowID?
     private var buttonDown = false
     private var slidingUntil: CFTimeInterval = -10
+    /// Mission Control or App Exposé shows every window shrunk, away from where the window list puts it.
+    private var exposing = false
     /// When each floating panel carrying snow (Spotlight and the like) first showed.
     private var panelsShownAt: [CGWindowID: CFTimeInterval] = [:]
 
@@ -61,7 +63,7 @@ final class WindowTracker {
         // Panels like Spotlight vanish on a keystroke; once one has stayed a while it's more likely a long-lived floating window.
         let panelOpen = panelsShownAt.values.contains { now - $0 < 20 }
         // Even while windows move, 60 looks a second are plenty: the snow follows a smoothed path of the window anyway.
-        let closely = eager || now - lastChange < 0.6 || dockShownAt != nil || pointerAtBottomEdge || panelOpen || Self.windowsMayChange
+        let closely = eager || now - lastChange < 0.6 || dockShownAt != nil || pointerAtBottomEdge || panelOpen || exposing || Self.windowsMayChange
         guard minimizing || interval >= (closely ? 1.0 / 62 : 0.2) else { return nil }
         lastQuery = now
         let surfaces = query(now: now)
@@ -72,8 +74,9 @@ final class WindowTracker {
         previous = surfaces
         lastChange = now
         let away = offscreen(among: vanished)
-        // Windows carried off the screen by a sliding Space are still listed, but their snow should wait for them too.
-        let elsewhere = sliding ? away.elsewhere.union(vanished.subtracting(away.parked)) : away.elsewhere
+        // Windows carried off the screen by a sliding Space or shrunk by Mission Control are still listed,
+        // but their snow should wait for them too.
+        let elsewhere = sliding || exposing ? away.elsewhere.union(vanished.subtracting(away.parked)) : away.elsewhere
         return WindowUpdate(surfaces: surfaces, interval: Float(min(interval, 0.25)), parked: away.parked, elsewhere: elsewhere, sliding: sliding)
     }
 
@@ -243,6 +246,7 @@ final class WindowTracker {
         var dockOut = false
         var fresh: [CGWindowID: Double] = [:]
         var panels: [CGWindowID: CFTimeInterval] = [:]
+        exposing = false
         defer {
             alphas = fresh
             panelsShownAt = panels
@@ -272,7 +276,11 @@ final class WindowTracker {
             }
             guard bounds.intersects(screen) else { continue }
             // Screen-sized windows above the normal layer (Notification Center, Siri) are transparent overlays.
-            if layer > 0 && bounds.width * bounds.height >= screen.width * screen.height * 0.9 { continue }
+            if layer > 0 && bounds.width * bounds.height >= screen.width * screen.height * 0.9 {
+                // Mission Control and App Exposé lay a shield of their own over the screen.
+                if owner == "WindowManager" { exposing = true }
+                continue
+            }
 
             let frame = CGRect(x: bounds.minX - screen.minX, y: screen.maxY - bounds.maxY, width: bounds.width, height: bounds.height)
             let roomAbove = bounds.minY - screen.minY >= menuBarHeight + 6 && frame.maxY < screen.height
@@ -299,7 +307,7 @@ final class WindowTracker {
             blockers.append(frame)
         }
         if !dockOut { dockShownAt = nil }
-        return surfaces
+        return exposing ? [] : surfaces
     }
 }
 
