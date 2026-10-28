@@ -1,9 +1,10 @@
 use std::cell::Cell;
 use std::collections::HashSet;
+use std::ffi::c_void;
 use std::mem::size_of;
 use std::sync::Once;
 
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWM_TIMING_INFO, DwmGetCompositionTimingInfo};
 use windows::Win32::Graphics::Gdi::{
     DEVMODEW, ENUM_CURRENT_SETTINGS, EnumDisplayMonitors, EnumDisplaySettingsW, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
@@ -443,6 +444,9 @@ fn create_overlay(rect: &RECT, shown_in_screenshots: bool) -> Result<HWND> {
         // A layered window stays invisible until it is given an opacity; WS_EX_TRANSPARENT then lets clicks through.
         SetLayeredWindowAttributes(window, COLORREF(0), 255, LWA_ALPHA)?;
         set_capture(window, shown_in_screenshots);
+        // With the taskbar set to hide itself, the overlay fills the whole display, and the shell would take it for a
+        // full-screen app: notifications go quiet, and a maximized window in front reads as full screen and covers it.
+        let _ = SetPropW(window, w!("NonRudeHWND"), Some(HANDLE(1 as *mut c_void)));
         let _ = ShowWindow(window, SW_SHOWNOACTIVATE);
         Ok(window)
     }
