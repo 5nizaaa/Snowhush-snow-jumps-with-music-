@@ -123,6 +123,8 @@ final class SnowSimulation {
     }
     var thaws = false
     var accumulates = true
+    /// Screen edges with no display past them: a window slid past one leaves its snow heaped against the edge.
+    var walls: (left: Bool, right: Bool) = (false, false)
     /// Keeps the snowfall from starting until a scattered window's snow first reaches the bottom of the screen.
     var snowfallHeld = false {
         didSet { updateTarget() }
@@ -162,6 +164,8 @@ final class SnowSimulation {
     private let gustWind: Float = 1000
     /// The snowfall is caught this long after the drifts, so it trails behind their powder.
     private let gustLag: Float = 0.3
+    /// Snow a wall scrapes up packs down to this share of its fresh bulk.
+    private let packing: Float = 0.6
 
     private let ground: SnowLayer
     private var ledges: [CGWindowID: SnowLayer] = [:]
@@ -233,6 +237,7 @@ final class SnowSimulation {
         expireParking()
         for ledge in ledgeList { carry(ledge, dt: dt) }
         trackCursor(point, dt: dt)
+        for ledge in ledgeList { confine(ledge) }
         blow(dt: dt)
         advanceFlakes(dt: dt)
         advanceGrains(dt: dt)
@@ -555,6 +560,55 @@ final class SnowSimulation {
             }
             if picks > 0 { heightsChanged = true }
         }
+    }
+
+    /// The part of a window slid past a wall carries no snow: the wall scrapes it off, and it heaps up against the
+    /// wall, which holds up the heap's face as the cursor holds up the snow it touches.
+    private func confine(_ ledge: SnowLayer) {
+        let count = ledge.count
+        let first = walls.left ? min(max(0, Int((-ledge.base.x / columnWidth - 0.5).rounded(.up))), count) : 0
+        let last = walls.right ? max(min(count - 1, Int(((width - ledge.base.x) / columnWidth - 0.5).rounded(.down))), -1) : count - 1
+        guard first > 0 || last < count - 1 else { return }
+        guard first <= last else {
+            // Nothing of the window is left this side of the wall: its snow falls down the wall.
+            let x: Float = first > 0 ? 1 : width - 1
+            for i in 0..<count where ledge.heights[i] > 0.05 {
+                let h = ledge.heights[i]
+                ledge.set(i, 0)
+                release(h * columnWidth, at: SIMD2(x, ledge.floor(i)), velocity: .zero, spread: SIMD2(1, h))
+            }
+            heightsChanged = true
+            return
+        }
+        if !heldLayers.contains(where: { $0 === ledge }) { heldLayers.append(ledge) }
+        scrape(ledge, 0..<first, onto: first, inward: 1)
+        scrape(ledge, (last + 1)..<count, onto: last, inward: -1)
+    }
+
+    /// Heaps the snow on `columns`, past a wall, onto column `edge` just inside it, packing down what wasn't packed
+    /// already. Scraped off fast, some of it crumbles off the heap and tumbles back over the window.
+    private func scrape(_ ledge: SnowLayer, _ columns: Range<Int>, onto edge: Int, inward: Float) {
+        var area: Float = 0
+        for i in columns {
+            let packed = min(ledge.packed[i], ledge.heights[i])
+            area += (packed + (ledge.heights[i] - packed) * packing) * columnWidth
+            ledge.set(i, 0)
+            ledge.hold(i)
+        }
+        guard area > 0.01 else { return }
+        heightsChanged = true
+        let speed = max(0, -inward * (ledge.trackVelocity.x + ledge.offsetVelocity.x))
+        let crumbled = area * 0.4 * smoothstep(200, 1200, speed)
+        if crumbled > 0.5 {
+            release(
+                crumbled,
+                at: SIMD2(ledge.centerX(edge), ledge.surface(edge)),
+                velocity: SIMD2(inward * speed * 0.25, 60 + speed * 0.12),
+                spread: SIMD2(columnWidth, 2),
+                scatter: 0.6
+            )
+        }
+        ledge.heap(area - crumbled, against: edge, inward: Int(inward), slope: repose * columnWidth)
     }
 
     /// Turns part of a ledge's snow into falling snow where it lies: a few columns at a time hold together

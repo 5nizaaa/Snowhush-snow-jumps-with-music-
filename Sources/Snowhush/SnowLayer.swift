@@ -8,6 +8,8 @@ final class SnowLayer {
     let opensAtEdges: Bool
     var origin: SIMD2<Float>
     private(set) var heights: [Float]
+    /// How much of each column's snow a wall has packed down already, so it isn't packed again.
+    private(set) var packed: [Float]
     /// The bed under each column relative to `origin.y`; zero along a flat edge, negative where a corner rounds off.
     private(set) var bed: [Float]
     private(set) var capacity: [Float] = []
@@ -47,6 +49,7 @@ final class SnowLayer {
         self.opensAtEdges = opensAtEdges
         self.phases = phases
         heights = Array(repeating: 0, count: columns)
+        packed = Array(repeating: 0, count: columns)
         bed = Array(repeating: 0, count: columns)
         visible = Array(repeating: true, count: columns)
         supported = Array(repeating: false, count: columns)
@@ -95,12 +98,16 @@ final class SnowLayer {
             let y = floor(last)
             let dropped = heights.removeLast()
             heights.insert(0, at: 0)
+            packed.removeLast()
+            packed.insert(0, at: 0)
             return (dropped, x, y)
         }
         let x = centerX(0)
         let y = floor(0)
         let dropped = heights.removeFirst()
         heights.append(0)
+        packed.removeFirst()
+        packed.append(0)
         return (dropped, x, y)
     }
 
@@ -110,10 +117,12 @@ final class SnowLayer {
 
     func set(_ i: Int, _ height: Float) {
         heights[i] = max(0, height)
+        packed[i] = min(packed[i], heights[i])
     }
 
     func replace(heights fresh: [Float]) {
         heights = fresh
+        packed = Array(repeating: 0, count: fresh.count)
         visible = Array(repeating: true, count: fresh.count)
         supported = Array(repeating: false, count: fresh.count)
         supportedRange = nil
@@ -159,6 +168,39 @@ final class SnowLayer {
         return missed
     }
 
+    /// Piles snow against a wall just past column `edge`, as a plough heaps it: a wedge falling away from the wall
+    /// at `slope` per column, the way `inward` points.
+    func heap(_ area: Float, against edge: Int, inward: Int, slope: Float) {
+        let amount = area / columnWidth
+        guard amount > 0 else { return }
+        var low = bed[edge] + heights[edge]
+        var high = low + amount
+        for _ in 0..<20 {
+            let middle = (low + high) / 2
+            if wedge(middle, edge: edge, inward: inward, slope: slope, scale: 0) < amount { low = middle } else { high = middle }
+        }
+        let total = wedge(high, edge: edge, inward: inward, slope: slope, scale: 0)
+        wedge(high, edge: edge, inward: inward, slope: slope, scale: amount / total)
+    }
+
+    /// The snow it takes to raise the surface to a line falling away from `level` at `edge`; adds `scale` of it.
+    @discardableResult
+    private func wedge(_ level: Float, edge: Int, inward: Int, slope: Float, scale: Float) -> Float {
+        let reach = inward > 0 ? heights.count - edge : edge + 1
+        var total: Float = 0
+        for k in 0..<reach {
+            let line = level - slope * Float(k)
+            guard line > -bedDepth else { break }
+            let i = edge + inward * k
+            let gap = line - (bed[i] + heights[i])
+            guard gap > 0 else { continue }
+            total += gap
+            heights[i] += gap * scale
+            packed[i] += gap * scale
+        }
+        return total
+    }
+
     func isHeld(_ i: Int) -> Bool {
         supported[i]
     }
@@ -193,50 +235,59 @@ final class SnowLayer {
         let open = opensAtEdges
 
         heights.withUnsafeMutableBufferPointer { h in
-            bed.withUnsafeBufferPointer { b in
-                supported.withUnsafeBufferPointer { held in
-                    for pass in 0..<6 {
-                        let forward = (pass % 2 == 0) == forwardFirst
-                        for k in 0..<(count - 1) {
-                            let i = forward ? k : count - 2 - k
-                            if held[i] || held[i + 1] { continue }
-                            let difference = (b[i] + h[i]) - (b[i + 1] + h[i + 1])
-                            if difference > limit + 0.01 {
-                                let transfer = min((difference - limit) * 0.5, h[i])
-                                h[i] -= transfer
-                                h[i + 1] += transfer
-                                if transfer > 0 { moved = true }
-                            } else if difference < -limit - 0.01 {
-                                let transfer = min((-difference - limit) * 0.5, h[i + 1])
-                                h[i] += transfer
-                                h[i + 1] -= transfer
-                                if transfer > 0 { moved = true }
+            packed.withUnsafeMutableBufferPointer { p in
+                bed.withUnsafeBufferPointer { b in
+                    supported.withUnsafeBufferPointer { held in
+                        // Moves snow between columns, packed snow in proportion.
+                        func shift(_ amount: Float, from a: Int, to c: Int) {
+                            let share = h[a] > 0 ? min(p[a], amount * p[a] / h[a]) : 0
+                            h[a] -= amount
+                            h[c] += amount
+                            p[a] -= share
+                            p[c] += share
+                        }
+                        for pass in 0..<6 {
+                            let forward = (pass % 2 == 0) == forwardFirst
+                            for k in 0..<(count - 1) {
+                                let i = forward ? k : count - 2 - k
+                                if held[i] || held[i + 1] { continue }
+                                let difference = (b[i] + h[i]) - (b[i + 1] + h[i + 1])
+                                if difference > limit + 0.01 {
+                                    let transfer = min((difference - limit) * 0.5, h[i])
+                                    shift(transfer, from: i, to: i + 1)
+                                    if transfer > 0 { moved = true }
+                                } else if difference < -limit - 0.01 {
+                                    let transfer = min((-difference - limit) * 0.5, h[i + 1])
+                                    shift(transfer, from: i + 1, to: i)
+                                    if transfer > 0 { moved = true }
+                                }
+                            }
+                            if open {
+                                if !held[0] && h[0] > limit + 0.01 {
+                                    let transfer = (h[0] - limit) * 0.5
+                                    h[0] -= transfer
+                                    p[0] = min(p[0], h[0])
+                                    spilledLeft += transfer
+                                    moved = true
+                                }
+                                if !held[count - 1] && h[count - 1] > limit + 0.01 {
+                                    let transfer = (h[count - 1] - limit) * 0.5
+                                    h[count - 1] -= transfer
+                                    p[count - 1] = min(p[count - 1], h[count - 1])
+                                    spilledRight += transfer
+                                    moved = true
+                                }
                             }
                         }
-                        if open {
-                            if !held[0] && h[0] > limit + 0.01 {
-                                let transfer = (h[0] - limit) * 0.5
-                                h[0] -= transfer
-                                spilledLeft += transfer
-                                moved = true
-                            }
-                            if !held[count - 1] && h[count - 1] > limit + 0.01 {
-                                let transfer = (h[count - 1] - limit) * 0.5
-                                h[count - 1] -= transfer
-                                spilledRight += transfer
-                                moved = true
-                            }
+                        // Pulls each slope toward its neighbours' average: rounds crests and notches, leaves even slopes alone.
+                        for i in 1..<max(1, count - 2) where !(held[i - 1] || held[i] || held[i + 1] || held[i + 2]) {
+                            let s0 = b[i - 1] + h[i - 1], s1 = b[i] + h[i], s2 = b[i + 1] + h[i + 1], s3 = b[i + 2] + h[i + 2]
+                            let kink = (s1 - s2) - 0.5 * ((s0 - s1) + (s2 - s3))
+                            guard abs(kink) > 0.02 else { continue }
+                            let transfer = kink > 0 ? min(kink * rounding, h[i]) : max(kink * rounding, -h[i + 1])
+                            if transfer > 0 { shift(transfer, from: i, to: i + 1) } else { shift(-transfer, from: i + 1, to: i) }
+                            if abs(transfer) > 0.003 { moved = true }
                         }
-                    }
-                    // Pulls each slope toward its neighbours' average: rounds crests and notches, leaves even slopes alone.
-                    for i in 1..<max(1, count - 2) where !(held[i - 1] || held[i] || held[i + 1] || held[i + 2]) {
-                        let s0 = b[i - 1] + h[i - 1], s1 = b[i] + h[i], s2 = b[i + 1] + h[i + 1], s3 = b[i + 2] + h[i + 2]
-                        let kink = (s1 - s2) - 0.5 * ((s0 - s1) + (s2 - s3))
-                        guard abs(kink) > 0.02 else { continue }
-                        let transfer = kink > 0 ? min(kink * rounding, h[i]) : max(kink * rounding, -h[i + 1])
-                        h[i] -= transfer
-                        h[i + 1] += transfer
-                        if abs(transfer) > 0.003 { moved = true }
                     }
                 }
             }
@@ -254,6 +305,7 @@ final class SnowLayer {
             let h = heights[i]
             let loss = min(h, (rate + max(0, h - floor) / settle) * dt)
             heights[i] = h - loss
+            packed[i] = min(packed[i], heights[i])
             fastest = max(fastest, loss)
         }
         // Sub-pixel melting is picked up by the idle glint refresh instead of forcing full-rate frames.

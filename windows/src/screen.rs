@@ -96,6 +96,18 @@ pub fn monitors() -> Vec<Monitor> {
         .collect()
 }
 
+/// Which side edges of a display's work area, left and right, have no display past them, so snow heaps up against them.
+pub fn walls(monitor: &Monitor, displays: &[Monitor]) -> (bool, bool) {
+    let (area, bounds) = (monitor.rect, monitor.bounds);
+    let beside = |edge: fn(&RECT) -> i32, x: i32| {
+        displays
+            .iter()
+            .any(|other| other.bounds != bounds && other.bounds.top < bounds.bottom && other.bounds.bottom > bounds.top && edge(&other.bounds) == x)
+    };
+    // A taskbar along a side stands between the snow and any display past it.
+    (area.left != bounds.left || !beside(|r| r.right, bounds.left), area.right != bounds.right || !beside(|r| r.left, bounds.right))
+}
+
 /// The display's vertical blanks on the performance counter: frames are started just after one, so they keep pace with it.
 pub struct Clock {
     pub frequency: i64,

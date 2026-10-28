@@ -21,7 +21,7 @@ use crate::light::{Wallpapers, daylight};
 use crate::log;
 use crate::prefs::Settings;
 use crate::render::Gpu;
-use crate::screen::{BACKDROP_CHANGED, Clock, DISPLAYS_CHANGED, Monitor, PowerBudget, Screen, dip_size, listen, monitors, watch_taskbar};
+use crate::screen::{BACKDROP_CHANGED, Clock, DISPLAYS_CHANGED, Monitor, PowerBudget, Screen, dip_size, listen, monitors, walls, watch_taskbar};
 use crate::tracker::Tracker;
 
 /// A piece of the welcome window crumbling into snow, in physical screen pixels.
@@ -301,7 +301,8 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
 /// moves behind windows or back.
 fn sync_screens(gpu: &Gpu, settings: &Settings, mut current: Vec<Screen>, layer: Option<DesktopLayer>, rebuild: bool) -> Vec<Screen> {
     let mut result = Vec::new();
-    for monitor in monitors() {
+    let displays = monitors();
+    for monitor in displays.iter().cloned() {
         let kept = current.iter().position(|screen| screen.monitor.name == monitor.name);
         let simulation = match kept.map(|i| current.swap_remove(i)) {
             Some(screen) if screen.monitor == monitor && !rebuild && screen.behind_windows() == layer.is_some() => {
@@ -329,6 +330,9 @@ fn sync_screens(gpu: &Gpu, settings: &Settings, mut current: Vec<Screen>, layer:
             Ok(screen) => result.push(screen),
             Err((error, _)) => log!("overlay failed: {error}"),
         }
+    }
+    for screen in &mut result {
+        screen.simulation.walls = walls(&screen.monitor, &displays);
     }
     result
 }

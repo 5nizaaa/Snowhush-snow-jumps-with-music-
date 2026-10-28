@@ -189,6 +189,43 @@ fn scattered_window_starts_the_held_snowfall() {
     assert_finite(&simulation);
 }
 
+#[test]
+fn a_window_slid_past_the_screen_edge_leaves_its_snow_heaped_against_it() {
+    for (out, wall) in [(-300.0, 0.0), (1080.0, 1280.0)] {
+        let mut simulation = SnowSimulation::new(1280.0, 800.0, Snowfall::Heavy);
+        simulation.thaws = false;
+        simulation.walls = (true, true);
+        let none = HashSet::new();
+        simulation.update_windows(&[surface(5, 400.0, 600.0, 500.0)], 0.2, &none, &none, false);
+        run(&mut simulation, 90.0, AWAY);
+        simulation.set_snowfall(Snowfall::Off);
+        run(&mut simulation, 10.0, AWAY);
+        let resting = ledge(&simulation);
+
+        for step in 1..=180 {
+            let x = 400.0 + (out - 400.0) * step as f32 / 180.0;
+            simulation.update_windows(&[surface(5, x, 600.0, 500.0)], DT, &none, &none, false);
+            simulation.step(DT, AWAY);
+        }
+        run(&mut simulation, 5.0, AWAY);
+        let heaped = ledge(&simulation);
+        // Three fifths of the window went past the wall, and their snow packs down once, to 0.6 of its bulk.
+        assert!((heaped / resting - 0.76).abs() < 0.08, "resting {resting}, against the wall {heaped}");
+
+        let mut buffer = vec![0.0; simulation.column_count()];
+        let layers = simulation.write_layers(&mut buffer);
+        let pile = layers.iter().find(|pile| pile.origin.y > 500.0).expect("ledge");
+        let (surface, bed) = buffer[pile.offset..pile.offset + 2 * pile.count].split_at(pile.count);
+        let depth = |i: usize| surface[i] - bed[i];
+        let x = |i: usize| pile.origin.x + (i as f32 + 0.5) * 2.0;
+        let past = (0..pile.count).filter(|&i| (x(i) - wall).abs() > 4.0 && (x(i) < 0.0 || x(i) > 1280.0)).map(depth).fold(0.0, f32::max);
+        assert!(past < 0.01, "snow left past the edge at {wall}: {past}");
+        let deepest = (0..pile.count).max_by(|&a, &b| depth(a).total_cmp(&depth(b))).unwrap();
+        assert!((x(deepest) - wall).abs() < 30.0, "deepest snow at {}, the wall at {wall}", x(deepest));
+        assert_finite(&simulation);
+    }
+}
+
 fn shake(simulation: &mut SnowSimulation, id: isize) {
     let none = HashSet::new();
     let mut t = 0.0;

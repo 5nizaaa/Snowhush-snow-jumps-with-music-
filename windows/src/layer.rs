@@ -7,6 +7,8 @@ pub struct SnowLayer {
     pub opens_at_edges: bool,
     pub origin: V2,
     pub heights: Vec<f32>,
+    /// How much of each column's snow a wall has packed down already, so it isn't packed again.
+    pub packed: Vec<f32>,
     /// The bed under each column relative to `origin.y`; zero along a flat edge, negative where a corner rounds off.
     pub bed: Vec<f32>,
     pub visible: Vec<bool>,
@@ -44,6 +46,7 @@ impl SnowLayer {
             opens_at_edges,
             origin,
             heights: vec![0.0; columns],
+            packed: vec![0.0; columns],
             bed: vec![0.0; columns],
             visible: vec![true; columns],
             top: 0.0,
@@ -126,12 +129,16 @@ impl SnowLayer {
             let y = self.floor(last);
             let dropped = self.heights.pop().unwrap_or(0.0);
             self.heights.insert(0, 0.0);
+            self.packed.pop();
+            self.packed.insert(0, 0.0);
             return (dropped, x, y);
         }
         let x = self.center_x(0);
         let y = self.floor(0);
         let dropped = self.heights.remove(0);
         self.heights.push(0.0);
+        self.packed.remove(0);
+        self.packed.push(0.0);
         (dropped, x, y)
     }
 
@@ -141,11 +148,13 @@ impl SnowLayer {
 
     pub fn set(&mut self, i: usize, height: f32) {
         self.heights[i] = height.max(0.0);
+        self.packed[i] = self.packed[i].min(self.heights[i]);
     }
 
     pub fn replace(&mut self, fresh: Vec<f32>) {
         let count = fresh.len();
         self.heights = fresh;
+        self.packed = vec![0.0; count];
         self.visible = vec![true; count];
         self.supported = vec![false; count];
         self.supported_range = None;
@@ -195,6 +204,48 @@ impl SnowLayer {
         missed
     }
 
+    /// Piles snow against a wall just past column `edge`, as a plough heaps it: a wedge falling away from the wall
+    /// at `slope` per column, the way `inward` points.
+    pub fn heap(&mut self, area: f32, edge: usize, inward: i32, slope: f32) {
+        let amount = area / self.column_width;
+        if amount <= 0.0 {
+            return;
+        }
+        let mut low = self.bed[edge] + self.heights[edge];
+        let mut high = low + amount;
+        for _ in 0..20 {
+            let middle = (low + high) / 2.0;
+            if self.wedge(middle, edge, inward, slope, 0.0) < amount {
+                low = middle;
+            } else {
+                high = middle;
+            }
+        }
+        let total = self.wedge(high, edge, inward, slope, 0.0);
+        self.wedge(high, edge, inward, slope, amount / total);
+    }
+
+    /// The snow it takes to raise the surface to a line falling away from `level` at `edge`; adds `scale` of it.
+    fn wedge(&mut self, level: f32, edge: usize, inward: i32, slope: f32, scale: f32) -> f32 {
+        let reach = if inward > 0 { self.heights.len() - edge } else { edge + 1 };
+        let mut total = 0.0;
+        for k in 0..reach {
+            let line = level - slope * k as f32;
+            if line <= -self.bed_depth {
+                break;
+            }
+            let i = if inward > 0 { edge + k } else { edge - k };
+            let gap = line - (self.bed[i] + self.heights[i]);
+            if gap <= 0.0 {
+                continue;
+            }
+            total += gap;
+            self.heights[i] += gap * scale;
+            self.packed[i] += gap * scale;
+        }
+        total
+    }
+
     /// Columns touching the cursor are held up by it, so their walls don't slump into the hole until it leaves.
     pub fn hold(&mut self, i: usize) {
         self.supported[i] = true;
@@ -226,6 +277,7 @@ impl SnowLayer {
         let mut spilled_right = 0.0;
         let open = self.opens_at_edges;
         let h = &mut self.heights;
+        let p = &mut self.packed;
         let b = &self.bed;
         let held = &self.supported;
 
@@ -239,15 +291,13 @@ impl SnowLayer {
                 let difference = (b[i] + h[i]) - (b[i + 1] + h[i + 1]);
                 if difference > limit + 0.01 {
                     let transfer = ((difference - limit) * 0.5).min(h[i]);
-                    h[i] -= transfer;
-                    h[i + 1] += transfer;
+                    shift(h, p, transfer, i, i + 1);
                     if transfer > 0.0 {
                         moved = true;
                     }
                 } else if difference < -limit - 0.01 {
                     let transfer = ((-difference - limit) * 0.5).min(h[i + 1]);
-                    h[i] += transfer;
-                    h[i + 1] -= transfer;
+                    shift(h, p, transfer, i + 1, i);
                     if transfer > 0.0 {
                         moved = true;
                     }
@@ -257,12 +307,14 @@ impl SnowLayer {
                 if !held[0] && h[0] > limit + 0.01 {
                     let transfer = (h[0] - limit) * 0.5;
                     h[0] -= transfer;
+                    p[0] = p[0].min(h[0]);
                     spilled_left += transfer;
                     moved = true;
                 }
                 if !held[count - 1] && h[count - 1] > limit + 0.01 {
                     let transfer = (h[count - 1] - limit) * 0.5;
                     h[count - 1] -= transfer;
+                    p[count - 1] = p[count - 1].min(h[count - 1]);
                     spilled_right += transfer;
                     moved = true;
                 }
@@ -279,8 +331,11 @@ impl SnowLayer {
                 continue;
             }
             let transfer = if kink > 0.0 { (kink * rounding).min(h[i]) } else { (kink * rounding).max(-h[i + 1]) };
-            h[i] -= transfer;
-            h[i + 1] += transfer;
+            if transfer > 0.0 {
+                shift(h, p, transfer, i, i + 1);
+            } else {
+                shift(h, p, -transfer, i + 1, i);
+            }
             if transfer.abs() > 0.003 {
                 moved = true;
             }
@@ -296,9 +351,10 @@ impl SnowLayer {
             return false;
         }
         let mut fastest: f32 = 0.0;
-        for h in self.heights.iter_mut().filter(|h| **h > 0.0) {
+        for (h, packed) in self.heights.iter_mut().zip(&mut self.packed).filter(|(h, _)| **h > 0.0) {
             let loss = h.min((rate + (*h - floor).max(0.0) / settle) * dt);
             *h -= loss;
+            *packed = packed.min(*h);
             fastest = fastest.max(loss);
         }
         // Sub-pixel melting is picked up by the idle glint refresh instead of forcing full-rate frames.
@@ -347,4 +403,13 @@ impl SnowLayer {
             })
             .collect();
     }
+}
+
+/// Moves snow between columns, packed snow in proportion.
+fn shift(h: &mut [f32], p: &mut [f32], amount: f32, from: usize, to: usize) {
+    let share = if h[from] > 0.0 { p[from].min(amount * p[from] / h[from]) } else { 0.0 };
+    h[from] -= amount;
+    h[to] += amount;
+    p[from] -= share;
+    p[to] += share;
 }

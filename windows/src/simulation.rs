@@ -2,6 +2,7 @@ use std::collections::hash_map::RandomState;
 use std::collections::{HashMap, HashSet};
 use std::f32::consts::{PI, TAU};
 use std::hash::{BuildHasher, Hasher};
+use std::ops::Range;
 
 use crate::geometry::{Rect, V2, smoothstep};
 use crate::layer::SnowLayer;
@@ -41,6 +42,8 @@ const GUST_LENGTH: f32 = 2.2;
 const GUST_WIND: f32 = 1000.0;
 /// The snowfall is caught this long after the drifts, so it trails behind their powder.
 const GUST_LAG: f32 = 0.3;
+/// Snow a wall scrapes up packs down to this share of its fresh bulk.
+const PACKING: f32 = 0.6;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Snowfall {
@@ -229,6 +232,8 @@ pub struct SnowSimulation {
     density: f32,
     pub thaws: bool,
     pub accumulates: bool,
+    /// Side edges, left and right, with no display past them: a window slid past one leaves its snow heaped against the edge.
+    pub walls: (bool, bool),
     /// Keeps the snowfall from starting until a scattered window's snow first reaches the bottom of the screen.
     snowfall_held: bool,
     /// Set when the held snowfall starts by itself, so the other displays can start theirs.
@@ -260,6 +265,7 @@ impl SnowSimulation {
             density: 1.0,
             thaws: false,
             accumulates: true,
+            walls: (false, false),
             snowfall_held: false,
             snowfall_released: false,
             scattered_until: -10.0,
@@ -368,6 +374,9 @@ impl SnowSimulation {
             self.air.carry(ledge, dt);
         }
         self.track_cursor(cursor, dt);
+        for (li, ledge) in self.layers.iter_mut().enumerate().skip(1) {
+            self.air.confine(ledge, li, self.width, self.walls);
+        }
         self.blow(dt);
         self.advance_flakes(dt);
         self.advance_grains(dt);
@@ -1100,6 +1109,62 @@ impl Air {
                 self.heights_changed = true;
             }
         }
+    }
+
+    /// The part of a window slid past a wall carries no snow: the wall scrapes it off, and it heaps up against the
+    /// wall, which holds up the heap's face as the cursor holds up the snow it touches.
+    fn confine(&mut self, ledge: &mut SnowLayer, li: usize, width: f32, walls: (bool, bool)) {
+        let count = ledge.count() as i64;
+        let base = ledge.base().x;
+        let first = if walls.0 { ((-base / COLUMN_WIDTH - 0.5).ceil() as i64).clamp(0, count) } else { 0 };
+        let last = if walls.1 { (((width - base) / COLUMN_WIDTH - 0.5).floor() as i64).clamp(-1, count - 1) } else { count - 1 };
+        if first == 0 && last == count - 1 {
+            return;
+        }
+        if first > last {
+            // Nothing of the window is left this side of the wall: its snow falls down the wall.
+            let x = if first > 0 { 1.0 } else { width - 1.0 };
+            for i in 0..ledge.count() {
+                let h = ledge.heights[i];
+                if h <= 0.05 {
+                    continue;
+                }
+                ledge.set(i, 0.0);
+                self.release(h * COLUMN_WIDTH, V2::new(x, ledge.floor(i)), V2::ZERO, V2::new(1.0, h), 0.0);
+            }
+            self.heights_changed = true;
+            return;
+        }
+        if !self.held_layers.contains(&li) {
+            self.held_layers.push(li);
+        }
+        self.scrape(ledge, 0..first as usize, first as usize, 1);
+        self.scrape(ledge, (last + 1) as usize..ledge.count(), last as usize, -1);
+    }
+
+    /// Heaps the snow on `columns`, past a wall, onto column `edge` just inside it, packing down what wasn't packed
+    /// already. Scraped off fast, some of it crumbles off the heap and tumbles back over the window.
+    fn scrape(&mut self, ledge: &mut SnowLayer, columns: Range<usize>, edge: usize, inward: i32) {
+        let mut area = 0.0;
+        for i in columns {
+            let packed = ledge.packed[i].min(ledge.heights[i]);
+            area += (packed + (ledge.heights[i] - packed) * PACKING) * COLUMN_WIDTH;
+            ledge.set(i, 0.0);
+            ledge.hold(i);
+        }
+        if area <= 0.01 {
+            return;
+        }
+        self.heights_changed = true;
+        let direction = inward as f32;
+        let speed = (-direction * (ledge.track_velocity.x + ledge.offset_velocity.x)).max(0.0);
+        let crumbled = area * 0.4 * smoothstep(200.0, 1200.0, speed);
+        if crumbled > 0.5 {
+            let position = V2::new(ledge.center_x(edge), ledge.surface(edge));
+            let velocity = V2::new(direction * speed * 0.25, 60.0 + speed * 0.12);
+            self.release(crumbled, position, velocity, V2::new(COLUMN_WIDTH, 2.0), 0.6);
+        }
+        ledge.heap(area - crumbled, edge, inward, REPOSE * COLUMN_WIDTH);
     }
 
     /// Turns part of a ledge's snow into falling snow where it lies: a few columns at a time hold together

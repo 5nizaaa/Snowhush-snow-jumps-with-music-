@@ -114,6 +114,11 @@ final class ScreenSnow {
         tracker.screen = CGRect(x: frame.minX, y: primaryHeight - frame.maxY, width: frame.width, height: frame.height)
         tracker.menuBarHeight = frame.maxY - screen.visibleFrame.maxY
         tracker.reset()
+        let others = NSScreen.screens.map(\.frame).filter { $0 != frame && $0.maxY > frame.minY && $0.minY < frame.maxY }
+        simulation.walls = (
+            left: !others.contains { abs($0.maxX - frame.minX) < 1 },
+            right: !others.contains { abs($0.minX - frame.maxX) < 1 }
+        )
     }
 
     private static func makeView(device: MTLDevice, size: CGSize) -> MTKView {
