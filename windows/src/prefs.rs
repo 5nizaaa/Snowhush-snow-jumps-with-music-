@@ -94,7 +94,7 @@ fn write(name: PCWSTR, value: u32) {
 }
 
 /// The "Animation effects" setting: off means the person prefers less motion.
-fn animations_enabled() -> bool {
+pub fn animations_enabled() -> bool {
     let mut enabled = BOOL(1);
     let result = unsafe {
         SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, Some((&raw mut enabled).cast::<c_void>()), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0))

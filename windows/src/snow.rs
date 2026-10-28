@@ -46,6 +46,8 @@ pub enum Command {
     Scatter(Vec<Piece>),
     /// Starts the snowfall held back for the welcome window.
     ReleaseSnowfall,
+    /// Blows all the snow away; when calm, for less motion, melts it where it lies instead.
+    ClearSnow(bool),
     Quit,
 }
 
@@ -144,6 +146,10 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
                 Command::ReleaseSnowfall => {
                     settings.welcomed = true;
                     screens.iter_mut().for_each(|screen| screen.simulation.set_snowfall_held(false));
+                }
+                Command::ClearSnow(calm) => {
+                    let direction = screens.first().map_or(-1.0, |screen| screen.simulation.breeze_direction());
+                    screens.iter_mut().for_each(|screen| screen.simulation.blow_away(direction, calm));
                 }
                 Command::Active(on) => {
                     if on && !active {

@@ -34,6 +34,11 @@ const SHAKING: f32 = 4.0;
 const JUMP_SPEED: f32 = 6000.0;
 const TRACK_TIME: f32 = 0.06;
 const MAX_MOTES: usize = 1500;
+const GUST_SWEEP: f32 = 0.6;
+const GUST_LENGTH: f32 = 2.2;
+const GUST_WIND: f32 = 1000.0;
+/// The snowfall is caught this long after the drifts, so it trails behind their powder.
+const GUST_LAG: f32 = 0.3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Snowfall {
@@ -139,6 +144,8 @@ struct Flake {
     mass: f32,
     tint: [f32; 3],
     tint_amount: f32,
+    /// The direction of the gust that caught the flake and carries it off the screen; zero until then.
+    blown: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -149,6 +156,8 @@ struct Grain {
     size: f32,
     /// A lump holds together in flight and bursts into powder where it lands; zero for loose snow.
     lump: f32,
+    /// Powder carried off by a gust: it rides the wind off the screen instead of settling.
+    blown: bool,
 }
 
 /// Powder thrown up by a lump bursting: it billows, slows in the air and fades without settling.
@@ -181,6 +190,15 @@ impl Random {
     }
 }
 
+/// A gust clearing the snow: its front sweeps across from the windward side, lifting the drifts behind it.
+#[derive(Clone, Copy)]
+struct Gust {
+    start: f64,
+    direction: f32,
+    /// Melts the snow in place instead, for Reduce Motion.
+    calm: bool,
+}
+
 /// Everything but the layers, so a layer can be borrowed alongside it.
 struct Air {
     flakes: Vec<Flake>,
@@ -198,6 +216,7 @@ struct Air {
     last_cursor_push: f64,
     /// Snow released while the air is full, laid straight onto the ground at the end of the step.
     overflow: Vec<(f32, f32)>,
+    gust: Option<Gust>,
 }
 
 pub struct SnowSimulation {
@@ -265,6 +284,7 @@ impl SnowSimulation {
                 last_window_motion: -10.0,
                 last_cursor_push: -10.0,
                 overflow: Vec::new(),
+                gust: None,
             },
         };
         simulation.update_target();
@@ -346,6 +366,7 @@ impl SnowSimulation {
             self.air.carry(ledge, dt);
         }
         self.track_cursor(cursor, dt);
+        self.blow(dt);
         self.advance_flakes(dt);
         self.advance_grains(dt);
         self.air.advance_motes(dt);
@@ -361,7 +382,7 @@ impl SnowSimulation {
         }
         let air = &self.air;
         // Only a cursor that actually displaces snow needs the full rate; one passing near it or resting in it changes nothing.
-        let pushed = air.clock - air.last_window_motion < 0.6 || air.clock - air.last_cursor_push < 0.3;
+        let pushed = air.clock - air.last_window_motion < 0.6 || air.clock - air.last_cursor_push < 0.3 || air.gust.is_some();
         // The steady trickle off window corners is a few tiny grains at a time; they read fine at the calm rate.
         let flying = air.grains.len() > 24 || air.clock < self.scattered_until;
         self.pace = if pushed {
@@ -391,7 +412,13 @@ impl SnowSimulation {
             position: grain.position,
             velocity: grain.velocity,
             size: grain.size,
-            alpha: if grain.lump > 0.0 { 0.97 } else { 0.95 },
+            alpha: if grain.lump > 0.0 {
+                0.97
+            } else if grain.blown {
+                0.8
+            } else {
+                0.95
+            },
             soft: if grain.lump > 0.0 { 0.2 } else { 0.3 },
             tint: [1.0; 3],
             lump: grain.lump,
@@ -453,6 +480,7 @@ impl SnowSimulation {
                 mass: 0.06,
                 tint: piece.color,
                 tint_amount: 1.0,
+                blown: 0.0,
             });
         }
     }
@@ -616,7 +644,7 @@ impl SnowSimulation {
     // Particles
 
     fn advance_flakes(&mut self, dt: f32) {
-        let wind = self.air.wind_speed();
+        let wind = self.air.breeze();
         let follow = (dt * 1.2).min(1.0);
         let settle = (dt * 1.6).min(1.0);
         let wake_radius: f32 = 80.0;
@@ -632,7 +660,12 @@ impl SnowSimulation {
         while i > 0 {
             i -= 1;
             let mut flake = self.air.flakes[i];
-            flake.velocity.x += (wind * (0.35 + 0.65 * flake.depth) - flake.velocity.x) * follow;
+            if flake.blown != 0.0 {
+                // The nearer the flake, the faster the gust seems to carry it.
+                flake.velocity.x += (flake.blown * GUST_WIND * (1.3 + 1.3 * flake.depth) - flake.velocity.x) * (dt * 2.5).min(1.0);
+            } else {
+                flake.velocity.x += (wind * (0.35 + 0.65 * flake.depth) - flake.velocity.x) * follow;
+            }
             flake.velocity.y += (-flake.fall_speed - flake.velocity.y) * settle;
 
             if wake_active {
@@ -657,13 +690,17 @@ impl SnowSimulation {
             flake.position.x += (flake.velocity.x + sway) * dt;
             flake.position.y += flake.velocity.y * flutter * dt;
 
+            if flake.blown != 0.0 && (flake.position.x < -30.0 || flake.position.x > self.width + 30.0) {
+                self.air.flakes.swap_remove(i);
+                continue;
+            }
             if flake.position.x < -30.0 {
                 flake.position.x += self.width + 60.0;
             } else if flake.position.x > self.width + 30.0 {
                 flake.position.x -= self.width + 60.0;
             }
 
-            if flake.settles && self.accumulates {
+            if flake.settles && self.accumulates && flake.blown == 0.0 {
                 if let Some((li, column)) = landing(&self.layers, flake.position.x, previous_y, flake.position.y) {
                     if self.snowfall_held && flake.mass < 1.0 && li == 0 {
                         self.snowfall_held = false;
@@ -696,13 +733,21 @@ impl SnowSimulation {
             i -= 1;
             let mut grain = self.air.grains[i];
             let previous_y = grain.position.y;
-            grain.velocity.y -= GRAVITY * dt;
-            grain.velocity *= damping;
+            if grain.blown {
+                // Light powder: the wind keeps it moving toward the edge it was blown to, and it barely sinks.
+                let speed = if grain.velocity.x < 0.0 { -GUST_WIND * 1.6 } else { GUST_WIND * 1.6 };
+                grain.velocity.x += (speed - grain.velocity.x) * (dt * 2.0).min(1.0);
+                grain.velocity.y -= GRAVITY * 0.08 * dt;
+            } else {
+                grain.velocity.y -= GRAVITY * dt;
+                grain.velocity *= damping;
+            }
             grain.position += grain.velocity * dt;
 
-            if grain.position.x < -10.0 || grain.position.x > self.width + 10.0 {
+            if grain.position.x < -10.0 || grain.position.x > self.width + 10.0 || grain.position.y < -10.0 {
                 self.air.grains.swap_remove(i);
-            } else if grain.velocity.y <= 0.0
+            } else if !grain.blown
+                && grain.velocity.y <= 0.0
                 && let Some((li, _)) = landing(&self.layers, grain.position.x, previous_y, grain.position.y)
             {
                 let layer = &mut self.layers[li];
@@ -721,7 +766,7 @@ impl SnowSimulation {
     }
 
     fn recycle(&mut self, i: usize) {
-        if self.air.flakes.len() <= self.target_flakes {
+        if self.air.flakes.len() <= self.target_flakes && !self.air.blowing() {
             let y = self.height + self.air.random.range(4.0, 40.0);
             self.air.flakes[i] = self.air.make_flake(self.width, y);
         } else {
@@ -729,7 +774,11 @@ impl SnowSimulation {
         }
     }
 
+    /// No new snow falls until the gust has carried off the last flake, then the snowfall starts again from the top.
     fn spawn_flakes(&mut self) {
+        if self.air.blowing() {
+            return;
+        }
         while self.air.flakes.len() < self.target_flakes {
             let y = self.height + self.air.random.range(0.0, self.height * 0.8);
             let flake = self.air.make_flake(self.width, y);
@@ -764,6 +813,76 @@ impl SnowSimulation {
         }
         self.air.strength += (self.strength_target - self.air.strength) * (1.0 - (-dt / 25.0).exp());
         self.update_target();
+    }
+
+    // Gust
+
+    /// The way the breeze blows now: 1 to the right, -1 to the left.
+    pub fn breeze_direction(&self) -> f32 {
+        if self.air.breeze() < 0.0 { -1.0 } else { 1.0 }
+    }
+
+    /// Clears all the snow: a gust in `direction` lifts it off the ground and the windows and blows it off the screen,
+    /// or, `calm`, it melts away where it lies.
+    pub fn blow_away(&mut self, direction: f32, calm: bool) {
+        let direction = if direction < 0.0 { -1.0 } else { 1.0 };
+        self.air.gust = Some(Gust { start: self.air.clock, direction, calm });
+        // Snow kept for windows on other desktops goes too, out of sight.
+        self.dormant.clear();
+        for (_, ledge, _) in &mut self.parking {
+            for i in 0..ledge.count() {
+                ledge.set(i, 0.0);
+            }
+        }
+    }
+
+    fn blow(&mut self, dt: f32) {
+        let Some(gust) = self.air.gust else { return };
+        let age = (self.air.clock - gust.start) as f32;
+        if age >= GUST_LENGTH && !self.air.flakes.iter().any(|flake| flake.blown != 0.0) {
+            self.air.gust = None;
+            return;
+        }
+        let margin = 40.0;
+        let front = gust_front(self.width, age, gust.direction, margin);
+        // Whatever the front has long passed is gone by now, however deep it was.
+        let finish = age > GUST_SWEEP + if gust.calm { 0.6 } else { 0.8 };
+        if !gust.calm {
+            let trailing = gust_front(self.width, age - GUST_LAG, gust.direction, margin);
+            for flake in self.air.flakes.iter_mut().filter(|flake| flake.blown == 0.0) {
+                // Each flake is caught a little further behind, so the snowfall doesn't go as one straight line.
+                let stagger = flake.phase / PHASE_WRAP * 240.0;
+                if finish || (trailing - flake.position.x) * gust.direction > stagger {
+                    flake.blown = gust.direction;
+                }
+            }
+        }
+        for layer in &mut self.layers {
+            let mut dust = 0.0;
+            for i in 0..layer.count() {
+                let height = layer.heights[i];
+                if height <= 0.0 {
+                    continue;
+                }
+                let x = layer.center_x(i);
+                if !gust.calm && (front - x) * gust.direction <= 0.0 {
+                    continue;
+                }
+                let surface = layer.surface(i);
+                let rate = if gust.calm { height * 2.5 + 6.0 } else { height * 8.0 + 50.0 };
+                let loss = if finish { height } else { height.min(rate * dt) };
+                layer.set(i, height - loss);
+                self.air.heights_changed = true;
+                if gust.calm || !layer.visible[i] {
+                    continue;
+                }
+                dust += loss * layer.column_width;
+                while dust >= 3.5 {
+                    self.air.lift(V2::new(x, surface), gust.direction);
+                    dust -= 3.5;
+                }
+            }
+        }
     }
 
     // Piles
@@ -1032,6 +1151,7 @@ impl Air {
                 area: share,
                 size: (share.sqrt() * 1.05).min(11.0),
                 lump: random.range(0.05, 1.0),
+                blown: false,
             });
         }
     }
@@ -1087,6 +1207,7 @@ impl Air {
                 area: share,
                 size: (share.sqrt() * 1.05).clamp(1.1, 5.0),
                 lump: 0.0,
+                blown: false,
             });
         }
     }
@@ -1195,6 +1316,7 @@ impl Air {
                 area: share,
                 size: (share.sqrt() * 1.05).clamp(1.1, 4.2),
                 lump: 0.0,
+                blown: false,
             });
         }
         area
@@ -1242,14 +1364,64 @@ impl Air {
             mass: 1.0,
             tint: [1.0; 3],
             tint_amount: 0.0,
+            blown: 0.0,
         }
     }
 
     fn wind_speed(&self) -> f32 {
+        self.breeze() + self.gust_speed()
+    }
+
+    fn breeze(&self) -> f32 {
         let t = self.clock;
         let breeze = (10.0 * (t * 0.07).sin() + 6.0 * (t * 0.19 + 1.7).sin() + 3.0 * (t * 0.43 + 4.1).sin()) as f32;
         breeze * (0.6 + 0.4 * self.strength)
     }
+
+    fn gust_speed(&self) -> f32 {
+        let Some(gust) = self.gust.filter(|gust| !gust.calm) else { return 0.0 };
+        let age = (self.clock - gust.start) as f32;
+        gust.direction * GUST_WIND * smoothstep(0.0, 0.12, age) * (1.0 - smoothstep(0.9, GUST_LENGTH, age))
+    }
+
+    fn blowing(&self) -> bool {
+        self.gust.is_some_and(|gust| !gust.calm)
+    }
+
+    /// A pinch of snow torn off by the gust: a grain of powder, now and then with a faint puff around it.
+    fn lift(&mut self, position: V2, direction: f32) {
+        if self.grains.len() >= MAX_GRAINS {
+            return;
+        }
+        let random = &mut self.random;
+        self.grains.push(Grain {
+            position: position + V2::new(random.range(-1.0, 1.0), random.range(-3.0, 0.0)),
+            velocity: V2::new(direction * random.range(800.0, 1800.0), random.range(60.0, 420.0)),
+            area: 0.0,
+            size: random.range(1.1, 2.6),
+            lump: 0.0,
+            blown: true,
+        });
+        if random.next() >= 0.35 || self.motes.len() >= MAX_MOTES {
+            return;
+        }
+        self.motes.push(Mote {
+            position,
+            velocity: V2::new(direction * random.range(200.0, 600.0), random.range(20.0, 120.0)),
+            size: random.range(6.0, 14.0),
+            alpha: random.range(0.06, 0.14),
+            age: 0.0,
+            life: random.range(0.6, 1.3),
+        });
+    }
+}
+
+/// Where the gust's front is `age` seconds in, coming in from `margin` past the windward edge of a display `width` wide.
+/// It hits at full speed and eases off as it crosses.
+fn gust_front(width: f32, age: f32, direction: f32, margin: f32) -> f32 {
+    let t = (age / GUST_SWEEP).clamp(0.0, 1.0);
+    let travel = (width + 2.0 * margin) * (1.0 - (1.0 - t) * (1.0 - t));
+    if direction > 0.0 { -margin + travel } else { width + margin - travel }
 }
 
 /// Puts snow that waited off screen back on its window, wherever the window is now, without treating the jump as motion.

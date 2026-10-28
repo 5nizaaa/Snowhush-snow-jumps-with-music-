@@ -85,6 +85,45 @@ fn cursor_sweeps_the_drift_aside() {
 }
 
 #[test]
+fn a_gust_blows_all_the_snow_away() {
+    let mut simulation = SnowSimulation::new(1280.0, 800.0, Snowfall::Heavy);
+    let none = HashSet::new();
+    let window = [surface(7, 300.0, 600.0, 500.0)];
+    simulation.update_windows(&window, 0.2, &none, &none, false);
+    run(&mut simulation, 90.0, AWAY);
+    assert_eq!(piles(&simulation).len(), 2);
+
+    simulation.blow_away(1.0, false);
+    run(&mut simulation, 1.5, AWAY);
+    assert!(!simulation.has_snow(), "drifts left: {:?}", piles(&simulation));
+    run(&mut simulation, 3.0, AWAY);
+    // The new snowfall starts above the screen and hasn't reached the ground yet.
+    assert!(!simulation.has_snow());
+    let mut sprites = vec![Sprite::default(); 20_000];
+    let count = simulation.write_sprites(&mut sprites);
+    assert!(sprites[..count].iter().all(|sprite| sprite.position.y > 400.0), "snow left in the lower half");
+    run(&mut simulation, 60.0, AWAY);
+    assert!(simulation.has_snow(), "the snowfall didn't come back");
+    assert_finite(&simulation);
+}
+
+#[test]
+fn a_calm_gust_melts_the_drifts_where_they_lie() {
+    let mut simulation = SnowSimulation::new(1280.0, 800.0, Snowfall::Heavy);
+    run(&mut simulation, 90.0, AWAY);
+    simulation.set_snowfall(Snowfall::Off);
+    let before = piles(&simulation)[0].1;
+    let falling = simulation.sprite_count();
+    simulation.blow_away(-1.0, true);
+    simulation.step(DT, AWAY);
+    assert!(simulation.sprite_count() <= falling, "a calm gust shouldn't throw anything up");
+    run(&mut simulation, 2.0, AWAY);
+    // Only the last of the snowfall, still landing, is left.
+    let after = piles(&simulation).first().map_or(0.0, |p| p.1);
+    assert!(after < before * 0.05, "before {before}, after {after}");
+}
+
+#[test]
 fn snow_settles_on_a_window_and_drops_when_it_closes() {
     let mut simulation = SnowSimulation::new(1280.0, 800.0, Snowfall::Heavy);
     let none = HashSet::new();

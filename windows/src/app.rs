@@ -38,6 +38,7 @@ const ID_WINDOWS: u32 = 204;
 const ID_BEHIND: u32 = 205;
 const ID_QUIT: u32 = 299;
 const ID_UPDATES: u32 = 206;
+const ID_CLEAR: u32 = 207;
 const TIMER_WELCOME: usize = 1;
 const TIMER_UPDATES: usize = 2;
 const WM_UPDATE: u32 = WM_APP + 2;
@@ -231,6 +232,7 @@ fn show_menu(window: HWND, x: i32, y: i32) {
         let _ = AppendMenuW(menu, melt, ID_MELT as usize, w!("Melt Snow"));
         let windows = MF_STRING | checked(settings.snow_on_windows) | if settings.behind_windows { MF_GRAYED } else { MF_ENABLED };
         let _ = AppendMenuW(menu, windows, ID_WINDOWS as usize, w!("Snow on Windows"));
+        let _ = AppendMenuW(menu, MF_STRING, ID_CLEAR as usize, w!("Clear Snow"));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(menu, MF_STRING | checked(settings.behind_windows), ID_BEHIND as usize, w!("Behind Windows"));
         let _ = AppendMenuW(menu, MF_STRING | checked(settings.show_in_screenshots), ID_SCREENSHOTS as usize, w!("Show in Screenshots"));
@@ -254,6 +256,11 @@ fn choose(window: HWND, chosen: u32, login: bool) {
         0 => {}
         ID_QUIT => quit(window),
         ID_UPDATES => check_for_updates(window, true),
+        ID_CLEAR => APP.with_borrow(|app| {
+            if let Some(app) = app {
+                send(app, Command::ClearSnow(!prefs::animations_enabled()));
+            }
+        }),
         ID_LOGIN => {
             let status = prefs::set_opens_at_login(!login);
             log!("open at login {}: {status:?}", !login);

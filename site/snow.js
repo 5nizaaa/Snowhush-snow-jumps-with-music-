@@ -19,6 +19,11 @@
   const MAX_GRAINS = 4000;
   const MAX_MOTES = 800;
   const PHASE_WRAP = 20 * Math.PI;
+  const GUST_SWEEP = 0.6;
+  const GUST_LENGTH = 2.2;
+  const GUST_WIND = 1000;
+  // The snowfall is caught this long after the drifts, so it trails behind their powder.
+  const GUST_LAG = 0.3;
   const DENSITY = { off: 0, light: 150, steady: 380, heavy: 800, variable: 380 };
   const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
 
@@ -413,6 +418,7 @@
       this.motes = [];
       this.cursor = null;
       this.cursorVelocity = [0, 0];
+      this.gust = null;
       this.time = rand(0, 100);
       this.visible = false;
       this.width = 0;
@@ -494,6 +500,10 @@
     }
 
     wind() {
+      return this.breeze() + this.gustSpeed();
+    }
+
+    breeze() {
       const t = this.time;
       const breeze = 10 * Math.sin(t * 0.07) + 6 * Math.sin(t * 0.19 + 1.7) + 3 * Math.sin(t * 0.43 + 4.1);
       return breeze * (0.6 + 0.4 * variation.strength);
@@ -553,11 +563,13 @@
     step(dt, pointer) {
       this.time += dt;
       this.trackCursor(pointer, dt);
+      this.blow(dt);
       this.advanceFlakes(dt);
       this.advanceGrains(dt);
       this.advanceMotes(dt);
       this.settle(dt);
-      const target = this.target();
+      // No new snow falls until the gust has carried off the last flake, then the snowfall starts again from the top.
+      const target = this.blowing ? 0 : this.target();
       while (this.flakes.length < target) this.flakes.push(this.makeFlake(-rand(0, this.height * 0.8)));
       for (const layer of this.layers) layer.refreshTop();
     }
@@ -583,10 +595,10 @@
     }
 
     advanceFlakes(dt) {
-      const wind = this.wind();
+      const wind = this.breeze();
       const follow = Math.min(1, dt * 1.2);
       const settle = Math.min(1, dt * 1.6);
-      const target = this.target();
+      const target = this.blowing ? 0 : this.target();
       let wake = null;
       if (this.cursor) {
         let [wx, wy] = this.cursorVelocity;
@@ -601,7 +613,12 @@
       const flakes = this.flakes;
       for (let i = flakes.length - 1; i >= 0; i--) {
         const f = flakes[i];
-        f.vx += (wind * (0.35 + 0.65 * f.depth) - f.vx) * follow;
+        if (f.blown) {
+          // The nearer the flake, the faster the gust seems to carry it.
+          f.vx += (f.blown * GUST_WIND * (1.3 + 1.3 * f.depth) - f.vx) * Math.min(1, dt * 2.5);
+        } else {
+          f.vx += (wind * (0.35 + 0.65 * f.depth) - f.vx) * follow;
+        }
         f.vy += (f.fall - f.vy) * settle;
         if (wake) {
           const dx = f.x - wake.x, dy = f.y - wake.y;
@@ -620,11 +637,12 @@
         const from = f.y;
         f.x += (f.vx + sway) * dt;
         f.y += f.vy * flutter * dt;
+        // Carried off by a gust, a flake leaves for good instead of coming round again.
+        let gone = Boolean(f.blown) && (f.x < -30 || f.x > this.width + 30);
         if (f.x < -30) f.x += this.width + 60;
         else if (f.x > this.width + 30) f.x -= this.width + 60;
 
-        let gone = false;
-        if (f.settles && settings.accumulate) {
+        if (!gone && f.settles && settings.accumulate && !f.blown) {
           const hit = this.landing(f.x, from, f.y);
           if (hit) {
             const missed = hit.layer.deposit(f.size * f.size * DEPOSITION * hit.layer.fill(hit.i), f.x);
@@ -650,13 +668,19 @@
       for (let i = grains.length - 1; i >= 0; i--) {
         const g = grains[i];
         const from = g.y;
-        g.vy += GRAVITY * dt;
-        g.vx *= damping;
-        g.vy *= damping;
+        if (g.blown) {
+          // Light powder: the wind keeps it moving toward the edge it was blown to, and it barely sinks.
+          g.vx += ((g.vx < 0 ? -GUST_WIND : GUST_WIND) * 1.6 - g.vx) * Math.min(1, dt * 2);
+          g.vy += GRAVITY * 0.08 * dt;
+        } else {
+          g.vy += GRAVITY * dt;
+          g.vx *= damping;
+          g.vy *= damping;
+        }
         g.x += g.vx * dt;
         g.y += g.vy * dt;
         let gone = g.x < -10 || g.x > this.width + 10 || g.y > this.height + 20;
-        if (!gone && g.vy >= 0) {
+        if (!gone && !g.blown && g.vy >= 0) {
           const hit = this.landing(g.x, from, g.y);
           if (hit && g.lump) {
             this.burst(g, hit.layer);
@@ -818,7 +842,85 @@
       }
     }
 
+    // MARK: Gust
+
+    get blowing() {
+      return this.gust !== null && !this.gust.calm;
+    }
+
+    gustSpeed() {
+      if (!this.blowing) return 0;
+      const age = this.time - this.gust.start;
+      return this.gust.direction * GUST_WIND * smoothstep(0, 0.12, age) * (1 - smoothstep(0.9, GUST_LENGTH, age));
+    }
+
+    /// Where the gust's front is `age` seconds in, coming in from `margin` past the windward edge.
+    /// It hits at full speed and eases off as it crosses.
+    gustFront(age, direction, margin) {
+      const t = Math.min(Math.max(age / GUST_SWEEP, 0), 1);
+      const travel = (this.width + 2 * margin) * (1 - (1 - t) * (1 - t));
+      return direction > 0 ? -margin + travel : this.width + margin - travel;
+    }
+
+    /// Clears all the snow: a gust in `direction` lifts it off the ground and the windows and blows it off the page.
+    blowAway(direction) {
+      this.gust = { start: this.time, direction: direction < 0 ? -1 : 1, calm: false };
+    }
+
+    blow(dt) {
+      const gust = this.gust;
+      if (!gust) return;
+      const age = this.time - gust.start;
+      if (age >= GUST_LENGTH && !this.flakes.some(f => f.blown)) {
+        this.gust = null;
+        return;
+      }
+      const margin = 40;
+      const front = this.gustFront(age, gust.direction, margin);
+      // Whatever the front has long passed is gone by now, however deep it was.
+      const finish = age > GUST_SWEEP + 0.8;
+      const trailing = this.gustFront(age - GUST_LAG, gust.direction, margin);
+      for (const f of this.flakes) {
+        // Each flake is caught a little further behind, so the snowfall doesn't go as one straight line.
+        if (!f.blown && (finish || (trailing - f.x) * gust.direction > f.phase / PHASE_WRAP * 240)) f.blown = gust.direction;
+      }
+      for (const layer of this.layers) {
+        let dust = 0;
+        for (let i = 0; i < layer.count; i++) {
+          const height = layer.h[i];
+          if (height <= 0) continue;
+          const x = layer.centerX(i);
+          if ((front - x) * gust.direction <= 0) continue;
+          const surface = layer.surface(i);
+          const loss = finish ? height : Math.min(height, (height * 8 + 50) * dt);
+          layer.h[i] = height - loss;
+          dust += loss * COLUMN;
+          while (dust >= 3.5) {
+            this.lift(x, surface, gust.direction);
+            dust -= 3.5;
+          }
+        }
+      }
+    }
+
+    /// A pinch of snow torn off by the gust: a grain of powder, now and then with a faint puff around it.
+    lift(x, y, direction) {
+      if (this.grains.length >= MAX_GRAINS) return;
+      this.grains.push({
+        x: x + rand(-1, 1),
+        y: y + rand(0, 3),
+        vx: direction * rand(800, 1800),
+        vy: -rand(60, 420),
+        area: 0,
+        size: rand(1.1, 2.6),
+        blown: true,
+      });
+      if (Math.random() >= 0.35 || this.motes.length >= MAX_MOTES) return;
+      this.motes.push({ x, y, vx: direction * rand(200, 600), vy: -rand(20, 120), size: rand(6, 14), alpha: rand(0.06, 0.14), age: 0, life: rand(0.6, 1.3) });
+    }
+
     clear() {
+      this.gust = null;
       this.flakes.length = 0;
       this.grains.length = 0;
       this.motes.length = 0;
@@ -985,7 +1087,7 @@
       }
       for (const g of this.grains) {
         data[k++] = g.x; data[k++] = g.y; data[k++] = g.size;
-        data[k++] = g.lump ? 0.97 : 0.95; data[k++] = g.lump ? 0.2 : 0.3; data[k++] = g.lump || 0;
+        data[k++] = g.lump ? 0.97 : g.blown ? 0.8 : 0.95; data[k++] = g.lump ? 0.2 : 0.3; data[k++] = g.lump || 0;
       }
       for (const m of this.motes) {
         const t = m.age / m.life;
@@ -1113,6 +1215,7 @@
       } else {
         settings.quit = false;
       }
+      if (item.dataset.action === 'clear') clearSnow();
       if (ledgesBefore && !ledgesActive()) scenes.forEach(scene => scene.shed());
       document.body.classList.toggle('snow-behind', settings.behind);
       reflect();
@@ -1120,6 +1223,19 @@
       wake();
       if (item.dataset.toggle === 'screenshots') capture();
     });
+  }
+
+  /// Blows the snow off every scene in the way the breeze blows; with reduced motion the drifts just go.
+  function clearSnow() {
+    if (reduceMotion.matches) {
+      for (const scene of scenes) {
+        scene.ground.clear();
+        for (const { layer } of scene.ledges) layer.clear();
+      }
+      return;
+    }
+    const direction = scenes[0]?.breeze() < 0 ? -1 : 1;
+    scenes.forEach(scene => scene.blowAway(direction));
   }
 
   // MARK: - Screenshot
