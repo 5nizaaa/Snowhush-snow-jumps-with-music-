@@ -181,7 +181,9 @@ final class WindowTracker {
             guard let id = entry[kCGWindowNumber as String] as? CGWindowID else { continue }
             // Gone full screen or zoomed to fill it, a window has no room for snow; its snow waits for it to come back to size.
             // Going full screen, it is off screen for the move to its own Space but already has its full-screen size.
-            if let boundsInfo = entry[kCGWindowBounds as String] as? NSDictionary,
+            // Only app windows: the Dock's window spans the screen too, and its snow falls when it hides.
+            if entry[kCGWindowLayer as String] as? Int == 0,
+               let boundsInfo = entry[kCGWindowBounds as String] as? NSDictionary,
                let bounds = CGRect(dictionaryRepresentation: boundsInfo),
                fillsScreen(bounds) {
                 elsewhere.insert(id)
