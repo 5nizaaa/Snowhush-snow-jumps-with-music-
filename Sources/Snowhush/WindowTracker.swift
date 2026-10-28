@@ -174,11 +174,21 @@ final class WindowTracker {
         guard let array = CFArrayCreate(nil, &pointers, pointers.count, nil),
               let info = CGWindowListCreateDescriptionFromArray(array) as? [[String: Any]]
         else { return ([], []) }
-        let away = info.compactMap { entry in
-            entry[kCGWindowIsOnscreen as String] as? Bool == true ? nil : entry[kCGWindowNumber as String] as? CGWindowID
-        }
+        var away: [CGWindowID] = []
         var parked = Set<CGWindowID>()
         var elsewhere = Set<CGWindowID>()
+        for entry in info {
+            guard let id = entry[kCGWindowNumber as String] as? CGWindowID else { continue }
+            // Gone full screen or zoomed to fill it, a window has no room for snow; its snow waits for it to come back to size.
+            // Going full screen, it is off screen for the move to its own Space but already has its full-screen size.
+            if let boundsInfo = entry[kCGWindowBounds as String] as? NSDictionary,
+               let bounds = CGRect(dictionaryRepresentation: boundsInfo),
+               fillsScreen(bounds) {
+                elsewhere.insert(id)
+            } else if entry[kCGWindowIsOnscreen as String] as? Bool != true {
+                away.append(id)
+            }
+        }
         let current = Spaces.current()
         for id in away {
             // A Space switch makes the new Space current before the old one's windows leave the screen.
@@ -189,6 +199,11 @@ final class WindowTracker {
             if spaces.isDisjoint(with: current) { elsewhere.insert(id) }
         }
         return (parked, elsewhere)
+    }
+
+    /// Whether a window, in the window list's coordinates, covers this display below the menu bar.
+    private func fillsScreen(_ bounds: CGRect) -> Bool {
+        bounds.intersects(screen) && bounds.width * bounds.height >= screen.width * (screen.height - menuBarHeight) * 0.9
     }
 
     /// Where the pointer reveals an auto-hidden Dock.
@@ -240,7 +255,6 @@ final class WindowTracker {
         guard screen.width > 0 else { return [] }
         let list = Self.windowList(now: now)
 
-        let visibleArea = screen.width * (screen.height - menuBarHeight)
         var blockers: [CGRect] = []
         var surfaces: [WindowSurface] = []
         var dockOut = false
@@ -285,10 +299,10 @@ final class WindowTracker {
             let frame = CGRect(x: bounds.minX - screen.minX, y: screen.maxY - bounds.maxY, width: bounds.width, height: bounds.height)
             let roomAbove = bounds.minY - screen.minY >= menuBarHeight + 6 && frame.maxY < screen.height
             let onScreen = frame.maxX > 0 && frame.minX < screen.width && frame.maxY > 0
-            let fillsScreen = bounds.width * bounds.height >= visibleArea * 0.9
+            let fills = fillsScreen(bounds)
 
             let coverOnly = coverOnlyOwners.contains(owner) && !shelf
-            if roomAbove && onScreen && !fillsScreen && !coverOnly && !fading && bounds.width >= 80 && bounds.height >= 40, id != 0 {
+            if roomAbove && onScreen && !fills && !coverOnly && !fading && bounds.width >= 80 && bounds.height >= 40, id != 0 {
                 // Search bars like Spotlight are capsules: low and wide, with fully rounded ends.
                 let capsule = !shelf && (owner.lowercased().contains("spotlight") || (bounds.height <= 90 && bounds.width >= bounds.height * 3))
                 let corner = shelf ? Dock.cornerRadius(height: bounds.height) : capsule ? min(bounds.height / 2, 32) : 18

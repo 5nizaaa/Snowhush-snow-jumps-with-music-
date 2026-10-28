@@ -307,11 +307,12 @@ impl Screen {
         // A window that moves outside a drag, as when it is maximized or snapped, jumps there in one go:
         // its snow is left behind instead of being carried along.
         let interval = if tracker.moving() || since < 0.1 { since.min(0.25) } else { 1.0 / 60.0 };
+        // Snow waits for a window gone to another desktop, or maximized or full screen and so without room for it.
         let elsewhere: HashSet<WindowId> = self
             .surfaces
             .iter()
             .map(|surface| surface.id)
-            .filter(|&id| !surfaces.iter().any(|surface| surface.id == id) && tracker.elsewhere(id))
+            .filter(|&id| !surfaces.iter().any(|surface| surface.id == id) && (tracker.elsewhere(id) || tracker.fills(id, &self.monitor.rect)))
             .collect();
         self.simulation.update_windows(&surfaces, interval, &HashSet::new(), &elsewhere, false);
         self.surfaces = surfaces;

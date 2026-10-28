@@ -209,6 +209,16 @@ impl Tracker {
         None
     }
 
+    /// Whether a listed window covers most of this display's work area, in physical pixels, as when maximized or full screen.
+    pub fn fills(&self, id: isize, area: &RECT) -> bool {
+        self.windows.iter().any(|window| {
+            let r = &window.rect;
+            let width = (r.right.min(area.right) - r.left.max(area.left)).max(0) as i64;
+            let height = (r.bottom.min(area.bottom) - r.top.max(area.top)).max(0) as i64;
+            window.id == id && width * height * 10 >= (area.right - area.left) as i64 * (area.bottom - area.top) as i64 * 9
+        })
+    }
+
     /// Whether a window that left the list moved to another virtual desktop, rather than closing or hiding.
     pub fn elsewhere(&self, id: isize) -> bool {
         let window = HWND(id as *mut c_void);
