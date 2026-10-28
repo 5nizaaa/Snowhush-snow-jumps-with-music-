@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, SPUSta
     private var accumulateItem: NSMenuItem!
     private var meltItem: NSMenuItem!
     private var snowOnWindowsItem: NSMenuItem!
+    private var clearItem: NSMenuItem!
     private var behindWindowsItem: NSMenuItem!
     private var screenshotsItem: NSMenuItem!
     private var loginItem: NSMenuItem!
@@ -132,6 +133,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, SPUSta
         accumulateItem = add("Accumulate", #selector(toggleAccumulate), to: menu)
         meltItem = add("Melt Snow", #selector(toggleMeltSnow), to: menu)
         snowOnWindowsItem = add("Snow on Windows", #selector(toggleSnowOnWindows), to: menu)
+        clearItem = add("Clear Snow", #selector(clearSnow), to: menu)
         menu.addItem(.separator())
         behindWindowsItem = add("Behind Windows", #selector(toggleBehindWindows), to: menu)
         screenshotsItem = add("Show in Screenshots", #selector(toggleScreenshots), to: menu)
@@ -161,6 +163,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, SPUSta
         meltItem.isEnabled = accumulates
         snowOnWindowsItem.state = snowOnWindows ? .on : .off
         snowOnWindowsItem.isEnabled = !behindWindows
+        clearItem.isEnabled = screens.contains { $0.simulation.hasSnow || $0.simulation.spriteCount > 0 }
         behindWindowsItem.state = behindWindows ? .on : .off
         screenshotsItem.state = Preferences.showInScreenshots ? .on : .off
         loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
@@ -190,6 +193,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, SPUSta
         snowOnWindows.toggle()
         Preferences.snowOnWindows = snowOnWindows
         if !snowOnWindows { screens.forEach { $0.dropWindowSnow() } }
+    }
+
+    @objc private func clearSnow() {
+        let direction = screens.first?.simulation.breezeDirection ?? -1
+        let calm = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        for snow in screens { snow.simulation.blowAway(direction: direction, calm: calm) }
     }
 
     @objc private func toggleBehindWindows() {

@@ -50,6 +50,8 @@ private struct Flake {
     var mass: Float = 1
     var tint = SIMD3<Float>(repeating: 1)
     var tintAmount: Float = 0
+    /// The direction of the gust that caught the flake and carries it off the screen; zero until then.
+    var blown: Float = 0
 }
 
 private struct Grain {
@@ -59,6 +61,8 @@ private struct Grain {
     var size: Float
     /// A lump holds together in flight and bursts into powder where it lands; zero for loose snow.
     var lump: Float = 0
+    /// Powder carried off by a gust: it rides the wind off the screen instead of settling.
+    var blown = false
 }
 
 /// Powder thrown up by a lump bursting: it billows, slows in the air and fades without settling.
@@ -150,6 +154,11 @@ final class SnowSimulation {
     private let jumpSpeed: Float = 6000
     private let trackTime: Float = 0.06
     private let maxMotes = 1500
+    private let gustSweep: Float = 0.6
+    private let gustLength: Float = 2.2
+    private let gustWind: Float = 1000
+    /// The snowfall is caught this long after the drifts, so it trails behind their powder.
+    private let gustLag: Float = 0.3
 
     private let ground: SnowLayer
     private var ledges: [CGWindowID: SnowLayer] = [:]
@@ -177,6 +186,8 @@ final class SnowSimulation {
     private var strength: Float = 1
     private var strengthTarget: Float = 1
     private var nextShift: Double = 0
+    /// A gust clearing the snow: its front sweeps across from the windward side, lifting the drifts behind it.
+    private var gust: (start: Double, direction: Float, calm: Bool)?
 
     init(width: Float, height: Float, snowfall: Snowfall) {
         self.width = width
@@ -219,6 +230,7 @@ final class SnowSimulation {
         expireParking()
         for ledge in ledgeList { carry(ledge, dt: dt) }
         trackCursor(point, dt: dt)
+        blow(dt: dt)
         advanceFlakes(dt: dt)
         advanceGrains(dt: dt)
         advanceMotes(dt: dt)
@@ -230,7 +242,7 @@ final class SnowSimulation {
             layer.previousBaseY = layer.base.y
         }
         // Only a cursor that actually displaces snow needs the full rate; one passing near it or resting in it changes nothing.
-        let pushed = clock - lastWindowMotion < 0.6 || clock - lastCursorPush < 0.3
+        let pushed = clock - lastWindowMotion < 0.6 || clock - lastCursorPush < 0.3 || gust != nil
         // The steady trickle off window corners is a few tiny grains at a time; they read fine at the calm rate.
         let flying = grains.count > 24 || clock < scatteredUntil
         if pushed {
@@ -266,7 +278,7 @@ final class SnowSimulation {
                 position: grain.position,
                 velocity: grain.velocity,
                 size: grain.size,
-                alpha: grain.lump > 0 ? 0.97 : 0.95,
+                alpha: grain.lump > 0 ? 0.97 : grain.blown ? 0.8 : 0.95,
                 soft: grain.lump > 0 ? 0.2 : 0.3,
                 lump: grain.lump
             )
@@ -800,7 +812,7 @@ final class SnowSimulation {
     }
 
     private func advanceFlakes(dt: Float) {
-        let wind = windSpeed()
+        let wind = breeze()
         let follow = min(1, dt * 1.2)
         let settle = min(1, dt * 1.6)
         let wakeRadius: Float = 80
@@ -813,7 +825,12 @@ final class SnowSimulation {
         var i = flakes.count - 1
         while i >= 0 {
             var flake = flakes[i]
-            flake.velocity.x += (wind * (0.35 + 0.65 * flake.depth) - flake.velocity.x) * follow
+            if flake.blown != 0 {
+                // The nearer the flake, the faster the gust seems to carry it.
+                flake.velocity.x += (flake.blown * gustWind * (1.3 + 1.3 * flake.depth) - flake.velocity.x) * min(1, dt * 2.5)
+            } else {
+                flake.velocity.x += (wind * (0.35 + 0.65 * flake.depth) - flake.velocity.x) * follow
+            }
             flake.velocity.y += (-flake.fallSpeed - flake.velocity.y) * settle
 
             if wakeActive {
@@ -834,13 +851,18 @@ final class SnowSimulation {
             flake.position.x += (flake.velocity.x + sway) * dt
             flake.position.y += flake.velocity.y * flutter * dt
 
+            if flake.blown != 0 && (flake.position.x < -30 || flake.position.x > width + 30) {
+                removeFlake(i)
+                i -= 1
+                continue
+            }
             if flake.position.x < -30 {
                 flake.position.x += width + 60
             } else if flake.position.x > width + 30 {
                 flake.position.x -= width + 60
             }
 
-            if flake.settles && accumulates {
+            if flake.settles && accumulates && flake.blown == 0 {
                 if let hit = landing(x: flake.position.x, from: previousY, to: flake.position.y) {
                     if snowfallHeld && flake.mass < 1 && hit.layer === ground {
                         snowfallHeld = false
@@ -870,13 +892,20 @@ final class SnowSimulation {
         while i >= 0 {
             var grain = grains[i]
             let previousY = grain.position.y
-            grain.velocity.y -= gravity * dt
-            grain.velocity *= damping
+            if grain.blown {
+                // Light powder: the wind keeps it moving toward the edge it was blown to, and it barely sinks.
+                let speed = grain.velocity.x < 0 ? -gustWind * 1.6 : gustWind * 1.6
+                grain.velocity.x += (speed - grain.velocity.x) * min(1, dt * 2)
+                grain.velocity.y -= gravity * 0.08 * dt
+            } else {
+                grain.velocity.y -= gravity * dt
+                grain.velocity *= damping
+            }
             grain.position += grain.velocity * dt
 
-            if grain.position.x < -10 || grain.position.x > width + 10 {
+            if grain.position.x < -10 || grain.position.x > width + 10 || grain.position.y < -10 {
                 removeGrain(i)
-            } else if grain.velocity.y <= 0, let hit = landing(x: grain.position.x, from: previousY, to: grain.position.y) {
+            } else if !grain.blown, grain.velocity.y <= 0, let hit = landing(x: grain.position.x, from: previousY, to: grain.position.y) {
                 if grain.lump > 0 {
                     burst(grain, into: hit.layer)
                     heightsChanged = true
@@ -946,16 +975,21 @@ final class SnowSimulation {
     }
 
     private func recycle(_ i: Int) {
-        if flakes.count <= targetFlakes {
+        if flakes.count <= targetFlakes && !blowing {
             flakes[i] = makeFlake(y: height + random.range(4, 40))
         } else {
-            flakes.swapAt(i, flakes.count - 1)
-            flakes.removeLast()
+            removeFlake(i)
         }
     }
 
+    private func removeFlake(_ i: Int) {
+        flakes.swapAt(i, flakes.count - 1)
+        flakes.removeLast()
+    }
+
+    /// No new snow falls until the gust has carried off the last flake, then the snowfall starts again from the top.
     private func spawnFlakes() {
-        guard flakes.count < targetFlakes else { return }
+        guard flakes.count < targetFlakes, !blowing else { return }
         for _ in flakes.count..<targetFlakes {
             flakes.append(makeFlake(y: height + random.range(0, height * 0.8)))
         }
@@ -981,9 +1015,19 @@ final class SnowSimulation {
     }
 
     private func windSpeed() -> Float {
+        breeze() + gustSpeed()
+    }
+
+    private func breeze() -> Float {
         let t = clock
         let breeze = Float(10 * sin(t * 0.07) + 6 * sin(t * 0.19 + 1.7) + 3 * sin(t * 0.43 + 4.1))
         return breeze * (0.6 + 0.4 * strength)
+    }
+
+    private func gustSpeed() -> Float {
+        guard let gust, !gust.calm else { return 0 }
+        let age = Float(clock - gust.start)
+        return gust.direction * gustWind * smoothstep(0, 0.12, age) * (1 - smoothstep(0.9, gustLength, age))
     }
 
     /// Wanders between light lulls, steady snow and heavy flurries.
@@ -1005,6 +1049,94 @@ final class SnowSimulation {
         guard abs(strengthTarget - strength) > 0.001 else { return }
         strength += (strengthTarget - strength) * (1 - exp(-dt / 25))
         updateTarget()
+    }
+
+    // MARK: - Gust
+
+    /// The way the breeze blows now: 1 to the right, -1 to the left.
+    var breezeDirection: Float { breeze() < 0 ? -1 : 1 }
+
+    /// Clears all the snow: a gust in `direction` lifts it off the ground and the windows and blows it off the screen,
+    /// or, `calm`, it melts away where it lies.
+    func blowAway(direction: Float, calm: Bool) {
+        gust = (clock, direction < 0 ? -1 : 1, calm)
+        // Snow kept for windows on other Spaces goes too, out of sight.
+        dormant.removeAll()
+        for entry in parking {
+            for i in 0..<entry.ledge.count { entry.ledge.set(i, 0) }
+        }
+    }
+
+    private var blowing: Bool { gust.map { !$0.calm } ?? false }
+
+    private func blow(dt: Float) {
+        guard let gust else { return }
+        let age = Float(clock - gust.start)
+        guard age < gustLength || flakes.contains(where: { $0.blown != 0 }) else {
+            self.gust = nil
+            return
+        }
+        let margin: Float = 40
+        let front = gustFront(age: age, direction: gust.direction, margin: margin)
+        // Whatever the front has long passed is gone by now, however deep it was.
+        let finish = age > gustSweep + (gust.calm ? 0.6 : 0.8)
+        if !gust.calm {
+            let trailing = gustFront(age: age - gustLag, direction: gust.direction, margin: margin)
+            for i in flakes.indices where flakes[i].blown == 0 {
+                // Each flake is caught a little further behind, so the snowfall doesn't go as one straight line.
+                let stagger = flakes[i].phase / phaseWrap * 240
+                if finish || (trailing - flakes[i].position.x) * gust.direction > stagger {
+                    flakes[i].blown = gust.direction
+                }
+            }
+        }
+        for layer in layers {
+            var dust: Float = 0
+            for i in 0..<layer.count {
+                let height = layer.heights[i]
+                guard height > 0 else { continue }
+                let x = layer.centerX(i)
+                guard gust.calm || (front - x) * gust.direction > 0 else { continue }
+                let surface = layer.surface(i)
+                let loss = finish ? height : min(height, (gust.calm ? height * 2.5 + 6 : height * 8 + 50) * dt)
+                layer.set(i, height - loss)
+                heightsChanged = true
+                guard !gust.calm, layer.visible[i] else { continue }
+                dust += loss * layer.columnWidth
+                while dust >= 3.5 {
+                    lift(at: SIMD2(x, surface), direction: gust.direction)
+                    dust -= 3.5
+                }
+            }
+        }
+    }
+
+    /// Where the gust's front is `age` seconds in, coming in from `margin` past the windward edge.
+    /// It hits at full speed and eases off as it crosses.
+    private func gustFront(age: Float, direction: Float, margin: Float) -> Float {
+        let t = min(max(age / gustSweep, 0), 1)
+        let travel = (width + 2 * margin) * (1 - (1 - t) * (1 - t))
+        return direction > 0 ? -margin + travel : width + margin - travel
+    }
+
+    /// A pinch of snow torn off by the gust: a grain of powder, now and then with a faint puff around it.
+    private func lift(at position: SIMD2<Float>, direction: Float) {
+        guard grains.count < maxGrains else { return }
+        grains.append(Grain(
+            position: position + SIMD2(random.range(-1, 1), random.range(-3, 0)),
+            velocity: SIMD2(direction * random.range(800, 1800), random.range(60, 420)),
+            area: 0,
+            size: random.range(1.1, 2.6),
+            blown: true
+        ))
+        guard random.next() < 0.35, motes.count < maxMotes else { return }
+        motes.append(Mote(
+            position: position,
+            velocity: SIMD2(direction * random.range(200, 600), random.range(20, 120)),
+            size: random.range(6, 14),
+            alpha: random.range(0.06, 0.14),
+            life: random.range(0.6, 1.3)
+        ))
     }
 
     // MARK: - Piles
