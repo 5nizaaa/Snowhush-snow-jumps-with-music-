@@ -37,8 +37,18 @@ const IGNORED: [&str; 10] = [
     "ApplicationManager_ImmersiveShellWindow",
     "Internet Explorer_Hidden",
 ];
-/// Switchers and thumbnails hide snow behind them but don't collect any.
-const COVER_ONLY: [&str; 4] = ["XamlExplorerHostIslandWindow", "MultitaskingViewFrame", "TaskListThumbnailWnd", "ForegroundStaging"];
+/// Switchers, thumbnails and the shell's flyouts (hidden tray icons, context menus, Start and the like) hide snow behind
+/// them but don't collect any. A flyout's rectangle also takes in a clear margin for its shadow, well outside what shows.
+const COVER_ONLY: [&str; 8] = [
+    "XamlExplorerHostIslandWindow",
+    "MultitaskingViewFrame",
+    "TaskListThumbnailWnd",
+    "ForegroundStaging",
+    "TopLevelWindowForOverflowXamlIsland",
+    "NotifyIconOverflowWindow",
+    "Xaml_WindowedPopupClass",
+    "Windows.UI.Core.CoreWindow",
+];
 
 #[derive(Clone, Copy, Default)]
 struct Events {
