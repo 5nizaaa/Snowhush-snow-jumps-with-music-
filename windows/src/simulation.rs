@@ -15,6 +15,8 @@ const THAW_DEPTH: f32 = 8.0;
 const LEDGE_THAW_DEPTH: f32 = 4.0;
 const THAW_RATE: f32 = 0.02;
 const THAW_TIME: f32 = 30.0;
+const THAW_BALANCE: f32 = 184.0;
+const THAW_EXPONENT: f32 = 0.74;
 const DEPOSITION: f32 = 1.1;
 const REPOSE: f32 = 0.8;
 const ROUNDING: f32 = 0.15;
@@ -888,6 +890,9 @@ impl SnowSimulation {
     // Piles
 
     fn settle(&mut self, dt: f32) {
+        // Melting nearly keeps pace with the snowfall, so heavier snowfall builds drifts only a little higher.
+        let falling = self.snowfall.flakes_per_megapoint() * self.air.strength * self.density;
+        let melt_pace = if falling > 0.0 { (falling / THAW_BALANCE).powf(THAW_EXPONENT) } else { 1.0 };
         for (li, layer) in self.layers.iter_mut().enumerate() {
             if !self.accumulates || self.thaws {
                 let floor = if !self.accumulates {
@@ -897,7 +902,7 @@ impl SnowSimulation {
                 } else {
                     LEDGE_THAW_DEPTH
                 };
-                if layer.thaw(dt, floor, THAW_RATE, THAW_TIME) {
+                if layer.thaw(dt * melt_pace, floor, THAW_RATE, THAW_TIME) {
                     self.air.heights_changed = true;
                 }
             }

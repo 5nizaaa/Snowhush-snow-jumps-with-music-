@@ -135,6 +135,8 @@ final class SnowSimulation {
     private let ledgeThawDepth: Float = 4
     private let thawRate: Float = 0.02
     private let thawTime: Float = 30
+    private let thawBalance: Float = 184
+    private let thawExponent: Float = 0.74
     private let deposition: Float = 1.1
     private let repose: Float = 0.8
     private let rounding: Float = 0.15
@@ -1142,10 +1144,13 @@ final class SnowSimulation {
     // MARK: - Piles
 
     private func settle(dt: Float) {
+        // Melting nearly keeps pace with the snowfall, so heavier snowfall builds drifts only a little higher.
+        let falling = snowfall.flakesPerMegapoint * strength * density
+        let meltPace = falling > 0 ? pow(falling / thawBalance, thawExponent) : 1
         for layer in layers {
             if !accumulates || thaws {
                 let floor = !accumulates ? 0 : (layer === ground ? thawDepth : ledgeThawDepth)
-                if layer.thaw(dt: dt, down: floor, rate: thawRate, settle: thawTime) { heightsChanged = true }
+                if layer.thaw(dt: dt * meltPace, down: floor, rate: thawRate, settle: thawTime) { heightsChanged = true }
             }
             // Shaken harder than gravity, a granular pile fluidizes and slumps to a flatter slope.
             if layer.relax(repose: layer.agitation > shaking ? repose * 0.35 : repose, rounding: rounding) { heightsChanged = true }

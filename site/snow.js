@@ -14,8 +14,12 @@
   const LEDGE_THAW_DEPTH = 4;
   const THAW_RATE = 0.02;
   const THAW_TIME = 30;
-  // Snow builds up half again as fast as in the app, so a visitor sees a setting change the drift sooner.
-  const DEPOSITION = 1.1 * 1.5;
+  const THAW_BALANCE = 184;
+  const THAW_EXPONENT = 0.74;
+  // Snow builds up half again as fast as in the app, so a visitor sees a setting change the drift sooner;
+  // it melts as much faster, so the drifts level off as high as in the app.
+  const BUILDUP = 1.5;
+  const DEPOSITION = 1.1 * BUILDUP;
   const MAX_GRAINS = 4000;
   const MAX_MOTES = 800;
   const PHASE_WRAP = 20 * Math.PI;
@@ -765,10 +769,13 @@
     }
 
     settle(dt) {
+      // Melting nearly keeps pace with the snowfall, so heavier snowfall builds drifts only a little higher.
+      const falling = DENSITY[settings.snowfall] * variation.strength;
+      const meltPace = falling > 0 ? BUILDUP * (falling / THAW_BALANCE) ** THAW_EXPONENT : 1;
       for (const layer of this.layers) {
         if (!settings.accumulate || settings.melt) {
           const floor = !settings.accumulate ? 0 : layer === this.ground ? THAW_DEPTH : LEDGE_THAW_DEPTH;
-          layer.thaw(dt, floor);
+          layer.thaw(dt * meltPace, floor);
         }
         layer.relax(REPOSE);
         if (layer.spill[0] > 1.5) {
