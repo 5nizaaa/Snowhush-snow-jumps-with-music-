@@ -13,7 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, SPUSta
     private var behindWindows = false
     private var snowfallHeld = false
     private var statusItem: NSStatusItem!
-    private var snowfallItems: [NSMenuItem] = []
+    private let snowfallSlider = SnowfallSlider()
     private var accumulateItem: NSMenuItem!
     private var meltItem: NSMenuItem!
     private var snowOnWindowsItem: NSMenuItem!
@@ -124,11 +124,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, SPUSta
         menu.autoenablesItems = false
 
         menu.addItem(.sectionHeader(title: "Snowfall"))
-        snowfallItems = Snowfall.allCases.map { snowfall in
-            let entry = add(snowfall.title, #selector(selectSnowfall(_:)), to: menu)
-            entry.tag = snowfall.rawValue
-            return entry
-        }
+        snowfallSlider.changed = { [unowned self] in select($0) }
+        let sliderItem = NSMenuItem()
+        sliderItem.view = snowfallSlider
+        menu.addItem(sliderItem)
         menu.addItem(.separator())
         accumulateItem = add("Accumulate", #selector(toggleAccumulate), to: menu)
         meltItem = add("Melt Snow", #selector(toggleMeltSnow), to: menu)
@@ -155,9 +154,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, SPUSta
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
-        for item in snowfallItems {
-            item.state = item.tag == snowfall.rawValue ? .on : .off
-        }
+        snowfallSlider.snowfall = snowfall
         accumulateItem.state = accumulates ? .on : .off
         meltItem.state = thaws ? .on : .off
         meltItem.isEnabled = accumulates
@@ -169,8 +166,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, SPUSta
         loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
     }
 
-    @objc private func selectSnowfall(_ sender: NSMenuItem) {
-        guard let snowfall = Snowfall(rawValue: sender.tag) else { return }
+    private func select(_ snowfall: Snowfall) {
         self.snowfall = snowfall
         Preferences.snowfall = snowfall
         for snow in screens { snow.simulation.snowfall = snowfall }
